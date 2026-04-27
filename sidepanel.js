@@ -1,6 +1,5 @@
 import {
   clickAt,
-  createComputerTool,
   createFindTool,
   createReadPageTool,
   createRefId,
@@ -84,10 +83,13 @@ const SYSTEM_PROMPT = [
   "You are a browser agent controlling the user's current browser tab.",
   'Use browser tools to inspect the page, choose actions carefully, and explain only concise, observable reasoning when it helps the user follow along.',
   'If you need to inspect the page state, call the page-reading or tab-context tools first.',
+  "Before saying the task is done, inspect or otherwise verify the current page state so your final answer reflects what is actually visible.",
   'When you make tool calls, keep the user-visible planning text short and practical.',
   'Never claim a browser action happened unless the corresponding tool call completed successfully.',
   'Surface tool calls, tool outputs, and any visible reasoning summaries in the transcript.',
 ].join(' ');
+const HANDS_FREE_PROMPT =
+  'Hands Free Mode is enabled: try to accomplish the user task without asking for extra user input. If you encounter errors, blocked interactions, ambiguity, or missing page state, make a reasonable attempt to diagnose and solve the issue yourself using the available tools before asking the user.';
 
 const state = {
   provider: DEFAULT_PROVIDER,
@@ -101,6 +103,9 @@ const state = {
   status: 'Idle',
   isDrawerOpen: false,
   conversationSearch: '',
+  handsFreeMode: false,
+  editingMessageId: null,
+  editingMessageWidth: 0,
 };
 
 const refStore = new Map();
@@ -127,6 +132,7 @@ const elements = {
   modelSelect: document.getElementById('modelSelect'),
   customModelField: document.getElementById('customModelField'),
   customModelInput: document.getElementById('customModelInput'),
+  handsFreeModeInput: document.getElementById('handsFreeModeInput'),
   clearConversationsButton: document.getElementById('clearConversationsButton'),
   statusPill: document.getElementById('statusPill'),
   transcript: document.getElementById('transcript'),
@@ -193,6 +199,74 @@ function safeStringify(value, space = 2) {
   }
 }
 
+async function responseErrorMessage(response, providerLabel) {
+  try {
+    const data = await response.json();
+    return (
+      data?.error?.message ||
+      data?.error ||
+      `${providerLabel} request failed with status ${response.status}`
+    );
+  } catch {
+    return `${providerLabel} request failed with status ${response.status}`;
+  }
+}
+
+async function readServerSentEvents(response, onEvent) {
+  if (!response.body) {
+    throw new Error('Streaming response body is unavailable.');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split(/\r?\n\r?\n/);
+    buffer = events.pop() || '';
+
+    for (const rawEvent of events) {
+      const event = { event: 'message', data: '' };
+      for (const line of rawEvent.split(/\r?\n/)) {
+        if (!line || line.startsWith(':')) continue;
+        const separatorIndex = line.indexOf(':');
+        const field =
+          separatorIndex === -1 ? line : line.slice(0, separatorIndex);
+        const value =
+          separatorIndex === -1
+            ? ''
+            : line.slice(separatorIndex + 1).replace(/^ /, '');
+
+        if (field === 'event') {
+          event.event = value;
+        } else if (field === 'data') {
+          event.data += event.data ? `\n${value}` : value;
+        }
+      }
+
+      if (event.data) {
+        await onEvent(event);
+      }
+    }
+  }
+
+  const tail = buffer.trim();
+  if (tail) {
+    await onEvent({
+      event: 'message',
+      data: tail
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trimStart())
+        .join('\n'),
+    });
+  }
+}
+
 function getProvider(provider = state.provider) {
   return PROVIDERS[provider] || PROVIDERS[DEFAULT_PROVIDER];
 }
@@ -223,6 +297,12 @@ function setCurrentApiKey(apiKey) {
   };
 }
 
+function currentSystemPrompt() {
+  return state.handsFreeMode
+    ? `${SYSTEM_PROMPT} ${HANDS_FREE_PROMPT}`
+    : SYSTEM_PROMPT;
+}
+
 function loadState() {
   const raw = localStorage.getItem(STORAGE_KEY);
   if (!raw) {
@@ -230,6 +310,7 @@ function loadState() {
     state.apiKey = '';
     state.apiKeys = {};
     state.model = DEFAULT_MODEL;
+    state.handsFreeMode = false;
     state.conversations = [createConversation()];
     state.activeConversationId = state.conversations[0].id;
     return;
@@ -247,6 +328,7 @@ function loadState() {
     }
     state.apiKey = state.apiKeys[state.provider] || parsed.apiKey || '';
     state.model = parsed.model || getDefaultModel(state.provider);
+    state.handsFreeMode = Boolean(parsed.handsFreeMode);
     state.conversations =
       Array.isArray(parsed.conversations) && parsed.conversations.length
         ? parsed.conversations
@@ -258,6 +340,7 @@ function loadState() {
     state.apiKey = '';
     state.apiKeys = {};
     state.model = DEFAULT_MODEL;
+    state.handsFreeMode = false;
     state.conversations = [createConversation()];
     state.activeConversationId = state.conversations[0].id;
   }
@@ -284,6 +367,7 @@ function persistState() {
       apiKey: state.apiKey,
       apiKeys: state.apiKeys,
       model: state.model,
+      handsFreeMode: state.handsFreeMode,
       activeConversationId: state.activeConversationId,
       conversations: state.conversations,
     }),
@@ -368,6 +452,7 @@ function setRunning(isRunning) {
   elements.modelSelect.disabled = isRunning;
   elements.customModelInput.disabled = isRunning;
   elements.apiKeyInput.disabled = isRunning;
+  elements.handsFreeModeInput.disabled = isRunning;
   elements.clearConversationsButton.disabled = isRunning;
   document
     .querySelectorAll('.conversation-delete')
@@ -635,6 +720,65 @@ function findToolResponse(messages, call) {
   );
 }
 
+function renderUserMessageEditor(message) {
+  const form = document.createElement('form');
+  form.className = 'message-edit-form';
+  const measuredWidth = Math.max(280, Math.ceil(state.editingMessageWidth || 0));
+  form.style.width = `${measuredWidth}px`;
+
+  const textarea = document.createElement('textarea');
+  textarea.className = 'message-edit-input';
+  textarea.value = message.content || '';
+  textarea.rows = Math.min(10, Math.max(2, textarea.value.split('\n').length));
+  textarea.spellcheck = false;
+
+  const actions = document.createElement('div');
+  actions.className = 'message-edit-actions';
+
+  const cancelButton = document.createElement('button');
+  cancelButton.type = 'button';
+  cancelButton.className = 'mini-button';
+  cancelButton.textContent = 'Cancel';
+      cancelButton.addEventListener('click', () => {
+    state.editingMessageId = null;
+    state.editingMessageWidth = 0;
+    renderAll();
+  });
+
+  const saveButton = document.createElement('button');
+  saveButton.type = 'submit';
+  saveButton.className = 'mini-button primary-mini-button';
+  saveButton.textContent = 'Save';
+
+  actions.append(cancelButton, saveButton);
+  form.append(textarea, actions);
+
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    saveEditedUserMessage(message.id, textarea.value);
+  });
+
+  textarea.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      state.editingMessageId = null;
+      state.editingMessageWidth = 0;
+      renderAll();
+    }
+    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      form.requestSubmit();
+    }
+  });
+
+  requestAnimationFrame(() => {
+    textarea.focus();
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+  });
+
+  return form;
+}
+
 function renderMessage(message, messages = []) {
   const article = document.createElement('article');
   article.className = `message ${message.role}`;
@@ -659,30 +803,35 @@ function renderMessage(message, messages = []) {
 
   if (message.role === 'user') {
     article.className = 'message user-message';
-    const bubble = document.createElement('div');
-    bubble.className = 'user-message-bubble';
-    bubble.append(body);
+    if (state.editingMessageId === message.id) {
+      const editor = renderUserMessageEditor(message);
+      article.append(editor);
+    } else {
+      const bubble = document.createElement('div');
+      bubble.className = 'user-message-bubble';
+      bubble.append(body);
 
-    const actions = document.createElement('div');
-    actions.className = 'message-actions';
+      const actions = document.createElement('div');
+      actions.className = 'message-actions';
 
-    const editButton = document.createElement('button');
-    editButton.type = 'button';
-    editButton.className = 'message-edit-button';
-    editButton.disabled = state.isRunning;
-    editButton.title = 'Edit message';
-    editButton.setAttribute('aria-label', 'Edit message');
-    editButton.innerHTML = `
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M12 20h9"></path>
-        <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
-      </svg>
-    `;
-    editButton.addEventListener('click', () => {
-      editUserMessage(message.id);
-    });
-    actions.append(editButton);
-    article.append(bubble, actions);
+      const editButton = document.createElement('button');
+      editButton.type = 'button';
+      editButton.className = 'message-edit-button';
+      editButton.disabled = state.isRunning;
+      editButton.title = 'Edit message';
+      editButton.setAttribute('aria-label', 'Edit message');
+      editButton.innerHTML = `
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 20h9"></path>
+          <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
+        </svg>
+      `;
+      editButton.addEventListener('click', (event) => {
+        startEditingUserMessage(message.id, event.currentTarget);
+      });
+      actions.append(editButton);
+      article.append(bubble, actions);
+    }
     return article;
   }
 
@@ -769,6 +918,7 @@ function renderAll() {
   state.apiKey = getCurrentApiKey();
   elements.conversationSearchInput.value = state.conversationSearch;
   elements.apiKeyInput.value = state.apiKey;
+  elements.handsFreeModeInput.checked = state.handsFreeMode;
   renderModelControls();
   renderConversationList();
   renderTranscript();
@@ -864,7 +1014,19 @@ function clearAllConversations() {
   showChatPage();
 }
 
-async function editUserMessage(messageId) {
+function startEditingUserMessage(messageId, triggerElement = null) {
+  if (state.isRunning || !messageId) return;
+  const bubble = triggerElement
+    ?.closest('.user-message')
+    ?.querySelector('.user-message-bubble');
+  state.editingMessageWidth = bubble
+    ? Math.ceil(bubble.getBoundingClientRect().width)
+    : 0;
+  state.editingMessageId = messageId;
+  renderAll();
+}
+
+async function saveEditedUserMessage(messageId, editedContent) {
   if (state.isRunning || !messageId) return;
 
   const conversation = getActiveConversation();
@@ -874,11 +1036,15 @@ async function editUserMessage(messageId) {
   if (messageIndex === -1) return;
 
   const originalMessage = conversation.messages[messageIndex];
-  const editedContent = prompt('Edit message', originalMessage.content || '');
-  if (editedContent == null) return;
-
   const nextContent = editedContent.trim();
-  if (!nextContent || nextContent === originalMessage.content) return;
+  if (!nextContent) return;
+
+  if (nextContent === originalMessage.content) {
+    state.editingMessageId = null;
+    state.editingMessageWidth = 0;
+    renderAll();
+    return;
+  }
 
   const willDiscardHistory = messageIndex < conversation.messages.length - 1;
   const shouldEdit = confirm(
@@ -888,6 +1054,8 @@ async function editUserMessage(messageId) {
   );
   if (!shouldEdit) return;
 
+  state.editingMessageId = null;
+  state.editingMessageWidth = 0;
   conversation.messages = conversation.messages.slice(0, messageIndex + 1);
   conversation.messages[messageIndex] = {
     ...originalMessage,
@@ -937,6 +1105,20 @@ function updateLastAssistantMessage(conversationId, updater) {
   conversation.updatedAt = Date.now();
   persistState();
   renderAll();
+  return message;
+}
+
+function updateMessage(conversationId, messageId, updater, options = {}) {
+  const conversation = getConversation(conversationId);
+  if (!conversation) throw new Error('Conversation not found.');
+  const message = conversation.messages.find((entry) => entry.id === messageId);
+  if (!message) return null;
+  updater(message);
+  conversation.updatedAt = Date.now();
+  persistState();
+  if (options.render !== false) {
+    renderAll();
+  }
   return message;
 }
 
@@ -1688,6 +1870,18 @@ async function resolvePointFromInput(tabId, input) {
   throw new Error('A coordinate or ref is required for this action.');
 }
 
+async function viewportCenter(tabId) {
+  const [result] = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => ({
+      x: Math.max(1, Math.floor(window.innerWidth / 2)),
+      y: Math.max(1, Math.floor(window.innerHeight / 2)),
+    }),
+  });
+
+  return result?.result || { x: 400, y: 300 };
+}
+
 async function sendKeyEvent(tabId, key, modifiers = 0) {
   await sendDebuggerCommand(tabId, 'Input.dispatchKeyEvent', {
     type: 'keyDown',
@@ -1748,14 +1942,9 @@ async function computer(input = {}) {
     }
 
     const point = await resolvePointFromInput(tab.id, input);
-    await sendDebuggerCommand(tab.id, 'Input.dispatchMouseEvent', {
-      type: 'mouseWheel',
-      x: point.x,
-      y: point.y,
-      deltaX: 0,
-      deltaY: Math.max(0, Number(input.duration) || 600),
-    });
-    return { ok: true, action, point };
+    const deltaY = Math.max(120, Math.abs(Number(input.duration) || 600));
+    await scrollBy(tab.id, debuggerApi, point.x, point.y, 0, deltaY);
+    return { ok: true, action, point, deltaX: 0, deltaY };
   }
 
   const point = await resolvePointFromInput(tab.id, input).catch(() => null);
@@ -1840,9 +2029,7 @@ async function computer(input = {}) {
   }
 
   if (action === 'scroll') {
-    if (!point) {
-      throw new Error('A coordinate or ref is required for scroll.');
-    }
+    const scrollPoint = point || (await viewportCenter(tab.id));
 
     const direction = String(input.scroll_direction || 'down').toLowerCase();
     const magnitude = Math.max(120, Math.abs(Number(input.duration) || 600));
@@ -1856,12 +2043,12 @@ async function computer(input = {}) {
     await scrollBy(
       tab.id,
       debuggerApi,
-      point.x,
-      point.y,
+      scrollPoint.x,
+      scrollPoint.y,
       deltas.deltaX,
       deltas.deltaY,
     );
-    return { ok: true, action, point, ...deltas };
+    return { ok: true, action, point: scrollPoint, ...deltas };
   }
 
   if (action === 'key') {
@@ -2091,7 +2278,7 @@ function requestMessagesForConversation(conversation) {
   }
 
   return [
-    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'system', content: currentSystemPrompt() },
     ...repairedMessages.map(toOpenAIMessage),
   ];
 }
@@ -2187,13 +2374,14 @@ function toGeminiContent(message) {
   };
 }
 
-async function callOpenAICompatible(conversation, providerConfig) {
+async function callOpenAICompatible(conversation, providerConfig, options = {}) {
   const model = conversation.model || state.model || getDefaultModel();
   const body = {
     model,
     messages: requestMessagesForConversation(conversation),
     tools: await toOpenAIToolDefinitions(),
     tool_choice: 'auto',
+    stream: true,
   };
 
   if (!providerConfig.omitTemperature) {
@@ -2216,23 +2404,50 @@ async function callOpenAICompatible(conversation, providerConfig) {
     body: JSON.stringify(body),
   });
 
-  const data = await response.json();
   if (!response.ok) {
-    const message =
-      data?.error?.message ||
-      `${providerConfig.label} request failed with status ${response.status}`;
-    throw new Error(message);
+    throw new Error(await responseErrorMessage(response, providerConfig.label));
   }
 
-  const choice = data?.choices?.[0]?.message;
-  if (!choice) {
-    throw new Error(`${providerConfig.label} returned no assistant message.`);
-  }
+  let content = '';
+  const toolCalls = [];
 
-  return choice;
+  await readServerSentEvents(response, ({ data }) => {
+    if (!data || data === '[DONE]') return;
+
+    const chunk = safeJsonParse(data);
+    const delta = chunk?.choices?.[0]?.delta;
+    if (!delta) return;
+
+    if (typeof delta.content === 'string') {
+      content += delta.content;
+      options.onTextDelta?.(delta.content);
+    }
+
+    for (const deltaCall of delta.tool_calls || []) {
+      const index = deltaCall.index ?? toolCalls.length;
+      toolCalls[index] ||= {
+        id: deltaCall.id || uid('tool_call'),
+        type: 'function',
+        function: { name: '', arguments: '' },
+      };
+
+      if (deltaCall.id) toolCalls[index].id = deltaCall.id;
+      if (deltaCall.function?.name) {
+        toolCalls[index].function.name += deltaCall.function.name;
+      }
+      if (deltaCall.function?.arguments) {
+        toolCalls[index].function.arguments += deltaCall.function.arguments;
+      }
+    }
+  });
+
+  return {
+    content,
+    tool_calls: toolCalls.filter((call) => call.function?.name),
+  };
 }
 
-async function callAnthropic(conversation, providerConfig) {
+async function callAnthropic(conversation, providerConfig, options = {}) {
   const response = await fetch(providerConfig.endpoint, {
     method: 'POST',
     headers: {
@@ -2243,45 +2458,69 @@ async function callAnthropic(conversation, providerConfig) {
     },
     body: JSON.stringify({
       model: conversation.model || state.model || getDefaultModel('anthropic'),
-      system: SYSTEM_PROMPT,
+      system: currentSystemPrompt(),
       messages: repairedConversationMessages(conversation).map(toAnthropicMessage),
       tools: await toAnthropicToolDefinitions(),
       tool_choice: { type: 'auto' },
       max_tokens: 4096,
       temperature: 0.2,
+      stream: true,
     }),
   });
 
-  const data = await response.json();
   if (!response.ok) {
-    const message =
-      data?.error?.message ||
-      `${providerConfig.label} request failed with status ${response.status}`;
-    throw new Error(message);
+    throw new Error(await responseErrorMessage(response, providerConfig.label));
   }
 
-  const content = Array.isArray(data.content) ? data.content : [];
+  const blocks = [];
+  await readServerSentEvents(response, ({ data }) => {
+    if (!data) return;
+    const chunk = safeJsonParse(data);
+
+    if (chunk?.type === 'content_block_start') {
+      blocks[chunk.index] = {
+        ...(chunk.content_block || {}),
+        inputJson: '',
+      };
+      return;
+    }
+
+    if (chunk?.type === 'content_block_delta') {
+      const block = blocks[chunk.index];
+      if (!block) return;
+
+      if (chunk.delta?.type === 'text_delta') {
+        block.text = `${block.text || ''}${chunk.delta.text || ''}`;
+        if (chunk.delta.text) options.onTextDelta?.(chunk.delta.text);
+      }
+
+      if (chunk.delta?.type === 'input_json_delta') {
+        block.inputJson = `${block.inputJson || ''}${chunk.delta.partial_json || ''}`;
+      }
+    }
+  });
+
   return {
-    content: content
+    content: blocks
       .filter((part) => part.type === 'text')
       .map((part) => part.text || '')
       .join('\n'),
-    tool_calls: content
+    tool_calls: blocks
       .filter((part) => part.type === 'tool_use')
       .map((part) => ({
         id: part.id,
         type: 'function',
         function: {
           name: part.name,
-          arguments: safeStringify(part.input || {}),
+          arguments: part.inputJson || safeStringify(part.input || {}),
         },
       })),
   };
 }
 
-async function callGemini(conversation, providerConfig) {
+async function callGemini(conversation, providerConfig, options = {}) {
   const model = conversation.model || state.model || getDefaultModel('gemini');
-  const url = `${providerConfig.endpoint}/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(state.apiKey)}`;
+  const url = `${providerConfig.endpoint}/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(state.apiKey)}`;
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -2289,7 +2528,7 @@ async function callGemini(conversation, providerConfig) {
     },
     body: JSON.stringify({
       systemInstruction: {
-        parts: [{ text: SYSTEM_PROMPT }],
+        parts: [{ text: currentSystemPrompt() }],
       },
       contents: repairedConversationMessages(conversation).map(toGeminiContent),
       tools: await toGeminiToolDefinitions(),
@@ -2299,46 +2538,56 @@ async function callGemini(conversation, providerConfig) {
     }),
   });
 
-  const data = await response.json();
   if (!response.ok) {
-    const message =
-      data?.error?.message ||
-      `${providerConfig.label} request failed with status ${response.status}`;
-    throw new Error(message);
+    throw new Error(await responseErrorMessage(response, providerConfig.label));
   }
 
-  const parts = data?.candidates?.[0]?.content?.parts || [];
+  let content = '';
+  const toolCalls = [];
+
+  await readServerSentEvents(response, ({ data }) => {
+    if (!data) return;
+    const chunk = safeJsonParse(data);
+    const parts = chunk?.candidates?.[0]?.content?.parts || [];
+
+    for (const part of parts) {
+      if (typeof part.text === 'string') {
+        content += part.text;
+        options.onTextDelta?.(part.text);
+      }
+
+      if (part.functionCall?.name) {
+        toolCalls.push({
+          id: uid('gemini_tool'),
+          type: 'function',
+          function: {
+            name: part.functionCall.name,
+            arguments: safeStringify(part.functionCall.args || {}),
+          },
+        });
+      }
+    }
+  });
+
   return {
-    content: parts
-      .filter((part) => typeof part.text === 'string')
-      .map((part) => part.text)
-      .join('\n'),
-    tool_calls: parts
-      .filter((part) => part.functionCall?.name)
-      .map((part) => ({
-        id: uid('gemini_tool'),
-        type: 'function',
-        function: {
-          name: part.functionCall.name,
-          arguments: safeStringify(part.functionCall.args || {}),
-        },
-      })),
+    content,
+    tool_calls: toolCalls,
   };
 }
 
-async function callProvider(conversation) {
+async function callProvider(conversation, options = {}) {
   const providerId = getProviderId(conversation.provider || state.provider);
   const providerConfig = getProvider(providerId);
 
   if (providerConfig.adapter === 'anthropic') {
-    return callAnthropic(conversation, providerConfig);
+    return callAnthropic(conversation, providerConfig, options);
   }
 
   if (providerConfig.adapter === 'gemini') {
-    return callGemini(conversation, providerConfig);
+    return callGemini(conversation, providerConfig, options);
   }
 
-  return callOpenAICompatible(conversation, providerConfig);
+  return callOpenAICompatible(conversation, providerConfig, options);
 }
 
 function normalizeAssistantMessage(choice) {
@@ -2446,9 +2695,45 @@ async function runConversation(conversationId) {
       }
 
       const refreshedConversation = getConversation(conversationId);
-      const choice = await callProvider(refreshedConversation);
+      let streamedAssistantMessage = null;
+      let pendingRender = false;
+      const choice = await callProvider(refreshedConversation, {
+        onTextDelta: (delta) => {
+          if (!delta || state.stopRequested) return;
+
+          if (!streamedAssistantMessage) {
+            streamedAssistantMessage = createMessage('assistant', '');
+            appendMessage(conversationId, streamedAssistantMessage);
+          }
+
+          updateMessage(
+            conversationId,
+            streamedAssistantMessage.id,
+            (message) => {
+              message.content = `${message.content || ''}${delta}`;
+            },
+            { render: false },
+          );
+
+          if (!pendingRender) {
+            pendingRender = true;
+            requestAnimationFrame(() => {
+              pendingRender = false;
+              renderAll();
+            });
+          }
+        },
+      });
       const assistantMessage = normalizeAssistantMessage(choice);
-      appendMessage(conversationId, assistantMessage);
+
+      if (streamedAssistantMessage) {
+        updateMessage(conversationId, streamedAssistantMessage.id, (message) => {
+          message.content = assistantMessage.content;
+          message.tool_calls = assistantMessage.tool_calls;
+        });
+      } else {
+        appendMessage(conversationId, assistantMessage);
+      }
 
       if (!assistantMessage.tool_calls.length) {
         break;
@@ -2555,6 +2840,11 @@ function bindEvents() {
 
   elements.apiKeyInput.addEventListener('input', () => {
     setCurrentApiKey(elements.apiKeyInput.value.trim());
+    persistState();
+  });
+
+  elements.handsFreeModeInput.addEventListener('change', () => {
+    state.handsFreeMode = elements.handsFreeModeInput.checked;
     persistState();
   });
 

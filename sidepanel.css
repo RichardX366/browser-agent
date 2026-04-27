@@ -363,6 +363,44 @@ textarea:focus {
   box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.16);
 }
 
+.toggle-field {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 12px 14px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+}
+
+.toggle-field input {
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  accent-color: var(--accent-strong);
+}
+
+.toggle-field strong {
+  display: block;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.toggle-field small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.toggle-field:focus-within {
+  border-color: rgba(110, 231, 255, 0.65);
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.16);
+}
+
 .status-row {
   display: flex;
   flex-wrap: wrap;
@@ -424,11 +462,12 @@ textarea:focus {
 
 .message.user-message {
   justify-self: end;
-  width: auto;
+  width: max-content;
   max-width: min(78%, 720px);
   display: grid;
   gap: 3px;
   justify-items: end;
+  min-width: 0;
 }
 
 .user-message-bubble {
@@ -500,6 +539,52 @@ textarea:focus {
   stroke-width: 1.9;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+.message-edit-form {
+  display: grid;
+  gap: 8px;
+  max-width: min(100%, calc(100vw - 72px));
+  justify-items: end;
+}
+
+.message-edit-input {
+  width: 100%;
+  min-height: 92px;
+  resize: vertical;
+  border: 1px solid rgba(110, 231, 255, 0.34);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  padding: 10px 14px;
+  font-size: 15px;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+.message-edit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  max-width: 100%;
+}
+
+.mini-button {
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  padding: 5px 9px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.primary-mini-button {
+  color: #06101b;
+  background: var(--accent);
+  border-color: transparent;
 }
 
 .message.assistant {

@@ -161,12 +161,14 @@ async function typeText(tabId, debuggerApi, text) {
 }
 
 async function scrollBy(tabId, debuggerApi, x, y, deltaX, deltaY) {
+  const normalizedDeltaX = Number.isFinite(Number(deltaX)) ? Number(deltaX) : 0;
+  const normalizedDeltaY = Number.isFinite(Number(deltaY)) ? Number(deltaY) : 0;
   return dispatchMouseEvent(tabId, debuggerApi, {
     type: 'mouseWheel',
     x,
     y,
-    deltaX,
-    deltaY,
+    deltaX: normalizedDeltaX,
+    deltaY: normalizedDeltaY,
   });
 }
 
@@ -323,87 +325,231 @@ function createFindTool(findImpl) {
   );
 }
 
-function createComputerTool(computerImpl) {
-  return makeTool(
-    'computer',
-    [
-      'Use a mouse and keyboard to interact with a web browser.',
-      'Action requirements:',
-      'left_click, right_click, double_click, triple_click, hover: require coordinate or ref.',
-      'left_click_drag: requires start_coordinate and coordinate.',
-      'scroll: requires coordinate or ref; scroll_direction defaults to down; duration controls magnitude.',
-      'scroll_to: requires ref or coordinate.',
-      'type: requires text; coordinate/ref is optional and used to focus before typing.',
-      'key: requires text containing the key name; modifiers is optional.',
-      'zoom: requires duration as the zoom factor.',
-      'wait: duration is optional and defaults to 1000 ms.',
-    ].join(' '),
-    {
-      type: 'object',
-      properties: {
-        action: {
-          type: 'string',
-          description:
-            'Action to perform. Requirements: left_click/right_click/double_click/triple_click/hover need coordinate or ref; left_click_drag needs start_coordinate and coordinate; scroll needs coordinate or ref; scroll_to needs ref or coordinate; type needs text and may use coordinate/ref to focus; key needs text; zoom needs duration as zoom factor; wait may use duration.',
-          enum: [
-            'left_click',
-            'right_click',
-            'type',
-            'wait',
-            'scroll',
-            'key',
-            'left_click_drag',
-            'double_click',
-            'triple_click',
-            'zoom',
-            'scroll_to',
-            'hover',
-          ],
-        },
-        coordinate: {
-          type: 'array',
-          description:
-            'Target x/y viewport coordinate. Required for click, hover, scroll, and scroll_to unless ref is supplied; required as the end point for left_click_drag.',
-          items: { type: 'number' },
-          minItems: 2,
-          maxItems: 2,
-        },
-        start_coordinate: {
-          type: 'array',
-          description:
-            'Starting x/y viewport coordinate. Required for left_click_drag.',
-          items: { type: 'number' },
-          minItems: 2,
-          maxItems: 2,
-        },
-        text: {
-          type: 'string',
-          description:
-            'Required for type and key actions. For type, this is inserted text; for key, this is the key name.',
-        },
-        duration: {
-          type: 'number',
-          description:
-            'Used by wait as milliseconds, by scroll/scroll_to as scroll magnitude, and by zoom as the required zoom factor.',
-        },
-        scroll_direction: {
-          type: 'string',
-          description: 'Direction for scroll. Optional; defaults to down.',
-        },
-        tabId: {
-          type: 'number',
-          description: 'Required browser tab id to control.',
-        },
-        ref: {
-          type: 'string',
-          description:
-            'Element ref returned by read_page or find. Can replace coordinate for click, hover, scroll, and scroll_to; optional focus target for type.',
-        },
-      },
-      required: ['action', 'tabId'],
+function pointTargetProperties() {
+  return {
+    coordinate: {
+      type: 'array',
+      description:
+        'Target x/y viewport coordinate. Use this when no element ref is available.',
+      items: { type: 'number' },
+      minItems: 2,
+      maxItems: 2,
     },
-    async (input, context) => computerImpl(input, context),
+    ref: {
+      type: 'string',
+      description:
+        'Element ref returned by read_page or find. Prefer this over coordinates when available.',
+    },
+    tabId: {
+      type: 'number',
+      description: 'Browser tab id to control. Omit to use the active tab.',
+    },
+  };
+}
+
+function createComputerActionTool(name, action, description, inputSchema, computerImpl) {
+  return makeTool(name, description, inputSchema, async (input, context) =>
+    computerImpl({ ...input, action }, context),
   );
+}
+
+function createComputerActionTools(computerImpl) {
+  const runComputer =
+    computerImpl || (async () => ({ error: 'computer not implemented' }));
+
+  return [
+    createComputerActionTool(
+      'left_click',
+      'left_click',
+      'Left-click a page element or viewport coordinate.',
+      {
+        type: 'object',
+        properties: pointTargetProperties(),
+        required: [],
+      },
+      runComputer,
+    ),
+    createComputerActionTool(
+      'right_click',
+      'right_click',
+      'Right-click a page element or viewport coordinate.',
+      {
+        type: 'object',
+        properties: pointTargetProperties(),
+        required: [],
+      },
+      runComputer,
+    ),
+    createComputerActionTool(
+      'double_click',
+      'double_click',
+      'Double-click a page element or viewport coordinate.',
+      {
+        type: 'object',
+        properties: pointTargetProperties(),
+        required: [],
+      },
+      runComputer,
+    ),
+    createComputerActionTool(
+      'triple_click',
+      'triple_click',
+      'Triple-click a page element or viewport coordinate, usually to select a paragraph or field contents.',
+      {
+        type: 'object',
+        properties: pointTargetProperties(),
+        required: [],
+      },
+      runComputer,
+    ),
+    createComputerActionTool(
+      'hover',
+      'hover',
+      'Move the mouse over a page element or viewport coordinate.',
+      {
+        type: 'object',
+        properties: pointTargetProperties(),
+        required: [],
+      },
+      runComputer,
+    ),
+    createComputerActionTool(
+      'drag',
+      'left_click_drag',
+      'Drag from one viewport coordinate to another.',
+      {
+        type: 'object',
+        properties: {
+          start_coordinate: {
+            type: 'array',
+            description: 'Starting x/y viewport coordinate.',
+            items: { type: 'number' },
+            minItems: 2,
+            maxItems: 2,
+          },
+          coordinate: {
+            type: 'array',
+            description: 'Ending x/y viewport coordinate.',
+            items: { type: 'number' },
+            minItems: 2,
+            maxItems: 2,
+          },
+          tabId: {
+            type: 'number',
+            description: 'Browser tab id to control. Omit to use the active tab.',
+          },
+        },
+        required: ['start_coordinate', 'coordinate'],
+      },
+      runComputer,
+    ),
+    createComputerActionTool(
+      'scroll',
+      'scroll',
+      'Scroll the page in a direction. Use scroll_to when you need to bring a specific element into view.',
+      {
+        type: 'object',
+        properties: {
+          scroll_direction: {
+            type: 'string',
+            enum: ['up', 'down', 'left', 'right'],
+            description: 'Scroll direction. Defaults to down.',
+          },
+          duration: {
+            type: 'number',
+            description:
+              'Scroll magnitude in pixels. Omit for a normal page-sized scroll.',
+          },
+          tabId: {
+            type: 'number',
+            description: 'Browser tab id to control. Omit to use the active tab.',
+          },
+        },
+        required: [],
+      },
+      runComputer,
+    ),
+    createComputerActionTool(
+      'scroll_to',
+      'scroll_to',
+      'Scroll a page element or viewport coordinate into view.',
+      {
+        type: 'object',
+        properties: {
+          ...pointTargetProperties(),
+          duration: {
+            type: 'number',
+            description:
+              'Fallback scroll magnitude in pixels when a coordinate is used.',
+          },
+        },
+        required: [],
+      },
+      runComputer,
+    ),
+    createComputerActionTool(
+      'type_text',
+      'type',
+      'Type text into the active field, or focus a target element/coordinate first and then type.',
+      {
+        type: 'object',
+        properties: {
+          ...pointTargetProperties(),
+          text: {
+            type: 'string',
+            description: 'Text to insert.',
+          },
+        },
+        required: ['text'],
+      },
+      runComputer,
+    ),
+    createComputerActionTool(
+      'press_key',
+      'key',
+      'Press a keyboard key such as Enter, Escape, Tab, ArrowDown, or Backspace.',
+      {
+        type: 'object',
+        properties: {
+          text: {
+            type: 'string',
+            description: 'Key name to press.',
+          },
+          modifiers: {
+            type: 'number',
+            description:
+              'Optional Chrome debugger modifier bitmask for Shift/Control/Alt/Meta.',
+          },
+          tabId: {
+            type: 'number',
+            description: 'Browser tab id to control. Omit to use the active tab.',
+          },
+        },
+        required: ['text'],
+      },
+      runComputer,
+    ),
+    createComputerActionTool(
+      'set_zoom',
+      'zoom',
+      'Set the browser zoom factor for the current tab.',
+      {
+        type: 'object',
+        properties: {
+          duration: {
+            type: 'number',
+            description: 'Zoom factor, such as 1 for 100% or 1.25 for 125%.',
+          },
+          tabId: {
+            type: 'number',
+            description: 'Browser tab id to control. Omit to use the active tab.',
+          },
+        },
+        required: ['duration'],
+      },
+      runComputer,
+    ),
+  ];
 }
 
 function createUploadImageTool(uploadImageImpl) {
@@ -750,9 +896,7 @@ function createToolRegistry(impl = {}) {
       },
       passthrough('updatePlan'),
     ),
-    createComputerTool(
-      impl.computer || (async () => ({ error: 'computer not implemented' })),
-    ),
+    ...createComputerActionTools(impl.computer),
     createWaitTool(
       impl.wait || (async () => ({ error: 'wait not implemented' })),
     ),
@@ -811,7 +955,7 @@ export {
   createTabControlTool,
   createReadPageTool,
   createFindTool,
-  createComputerTool,
+  createComputerActionTools,
   createUploadImageTool,
   createWaitTool,
   createShortcutsListTool,
