@@ -100,6 +100,7 @@ const state = {
   stopRequested: false,
   status: 'Idle',
   isDrawerOpen: false,
+  conversationSearch: '',
 };
 
 const refStore = new Map();
@@ -114,6 +115,7 @@ const elements = {
   drawerBackdrop: document.getElementById('drawerBackdrop'),
   conversationDrawerButton: document.getElementById('conversationDrawerButton'),
   conversationList: document.getElementById('conversationList'),
+  conversationSearchInput: document.getElementById('conversationSearchInput'),
   newConversationButton: document.getElementById('newConversationButton'),
   settingsButton: document.getElementById('settingsButton'),
   closeSettingsButton: document.getElementById('closeSettingsButton'),
@@ -485,12 +487,39 @@ function conversationSummary(conversation) {
   return truncateText(`${prefix}${lastMessage.content || ''}`, 46);
 }
 
+function conversationMatchesSearch(conversation, query) {
+  if (!query) return true;
+
+  const providerLabel = getProvider(conversation.provider).label;
+  const searchableText = [
+    conversation.title,
+    providerLabel,
+    conversation.model || getDefaultModel(conversation.provider),
+    conversationSummary(conversation),
+    ...(conversation.messages || []).map((message) => message.content || ''),
+  ]
+    .join(' ')
+    .toLowerCase();
+
+  return searchableText.includes(query);
+}
+
 function renderConversationList() {
   elements.conversationList.innerHTML = '';
 
-  const conversations = [...state.conversations].sort(
-    (left, right) => right.updatedAt - left.updatedAt,
-  );
+  const query = state.conversationSearch.trim().toLowerCase();
+  const conversations = [...state.conversations]
+    .filter((conversation) => conversationMatchesSearch(conversation, query))
+    .sort((left, right) => right.updatedAt - left.updatedAt);
+
+  if (query && conversations.length === 0) {
+    const emptySearch = document.createElement('div');
+    emptySearch.className = 'conversation-empty';
+    emptySearch.textContent = 'No matching conversations';
+    elements.conversationList.append(emptySearch);
+    return;
+  }
+
   for (const conversation of conversations) {
     const item = document.createElement('div');
     item.className = `conversation-item ${conversation.id === state.activeConversationId ? 'active' : ''}`;
@@ -532,8 +561,7 @@ function renderConversationList() {
 
     const summary = document.createElement('div');
     summary.className = 'conversation-meta';
-    const providerLabel = getProvider(conversation.provider).label;
-    summary.innerHTML = `<span>${escapeHtml(`${providerLabel} / ${conversation.model || getDefaultModel(conversation.provider)}`)}</span><span>${escapeHtml(conversationSummary(conversation))}</span>`;
+    summary.textContent = conversationSummary(conversation);
 
     selectButton.append(title, meta, summary);
     item.append(selectButton, deleteButton);
@@ -739,6 +767,7 @@ function renderTranscript() {
 function renderAll() {
   ensureDefaultConversation();
   state.apiKey = getCurrentApiKey();
+  elements.conversationSearchInput.value = state.conversationSearch;
   elements.apiKeyInput.value = state.apiKey;
   renderModelControls();
   renderConversationList();
@@ -766,6 +795,7 @@ function selectConversation(conversationId) {
 }
 
 function newConversation() {
+  state.conversationSearch = '';
   const conversation = createConversation();
   conversation.provider = state.provider;
   conversation.model = state.model;
@@ -2510,6 +2540,10 @@ function bindEvents() {
   elements.drawerBackdrop.addEventListener('click', closeConversationDrawer);
   elements.settingsButton.addEventListener('click', showSettingsPage);
   elements.closeSettingsButton.addEventListener('click', showChatPage);
+  elements.conversationSearchInput.addEventListener('input', () => {
+    state.conversationSearch = elements.conversationSearchInput.value;
+    renderConversationList();
+  });
   elements.clearConversationsButton.addEventListener(
     'click',
     clearAllConversations,

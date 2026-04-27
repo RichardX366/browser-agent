@@ -12,12 +12,31 @@
 
       <aside id="sidebar" class="sidebar" aria-label="Conversations">
         <div class="sidebar-actions">
+          <label class="conversation-search">
+            <span class="sr-only">Search conversations</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m21 21-4.3-4.3"></path>
+              <circle cx="11" cy="11" r="7"></circle>
+            </svg>
+            <input
+              id="conversationSearchInput"
+              type="search"
+              placeholder="Search conversations"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </label>
           <button
             id="newConversationButton"
-            class="primary-button"
+            class="icon-button new-conversation-button"
             type="button"
+            aria-label="New conversation"
+            title="New conversation"
           >
-            New conversation
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 5v14"></path>
+              <path d="M5 12h14"></path>
+            </svg>
           </button>
           <button
             id="settingsButton"
