@@ -28,6 +28,7 @@ const PROVIDERS = {
       'gpt-4.1-nano',
     ],
     endpoint: 'https://api.openai.com/v1/chat/completions',
+    responsesEndpoint: 'https://api.openai.com/v1/responses',
     adapter: 'openai-compatible',
   },
   anthropic: {
@@ -79,14 +80,22 @@ const PROVIDERS = {
   },
 };
 const DEFAULT_MODEL = PROVIDERS[DEFAULT_PROVIDER].defaultModel;
+const SCROLL_DELTA_VIEWPORT_RATIO = 0.7;
+const RECENT_USER_REMINDER_COUNT = 10;
+const RECENT_USER_REMINDER_MAX_CHARS = 3500;
+const RECENT_USER_MESSAGE_MAX_CHARS = 500;
 const SYSTEM_PROMPT = [
   "You are a browser agent controlling the user's current browser tab.",
   'Use browser tools to inspect the page, choose actions carefully, and explain only concise, observable reasoning when it helps the user follow along.',
+  "Before each tool call or final answer, internally reason through the user's current objective, the observed page state, what changed after the last action, the likely next step, and how you will verify success.",
   'If you need to inspect the page state, call the page-reading or tab-context tools first.',
   'Before saying the task is done, inspect or otherwise verify the current page state so your final answer reflects what is actually visible.',
-  'When you make tool calls, keep the user-visible planning text short and practical.',
   'Never claim a browser action happened unless the corresponding tool call completed successfully.',
   'Surface tool calls, tool outputs, and any visible reasoning summaries in the transcript.',
+  'After doing things, you should reflect on how the page state has changed and what to do next based on what you see.',
+  'You should prefer to take actions such as clicking and typing to navigate a webpage rather than directly navigating to links.',
+  'If something is not in view, you should not just "click near it." Instead, scroll until it is in view.',
+  'If you do not find something you wanted to in read_page, use page_number to read additional pages of results until you find what you need or exhaust the content. Do NOT forget that read_page truncates, so you will oftentimes need to query the next page of results.',
 ].join(' ');
 const HANDS_FREE_PROMPT =
   'Hands Free Mode is enabled: try to accomplish the user task without asking for extra user input. If you encounter errors, blocked interactions, ambiguity, or missing page state, make a reasonable attempt to diagnose and solve the issue yourself using the available tools before asking the user.';
@@ -107,8 +116,36 @@ const state = {
   editingMessageId: null,
 };
 
+const KEY_MAP = {
+  Enter: { key: 'Enter', code: 'Enter', keyCode: 13 },
+  Tab: { key: 'Tab', code: 'Tab', keyCode: 9 },
+  Backspace: { key: 'Backspace', code: 'Backspace', keyCode: 8 },
+  Escape: { key: 'Escape', code: 'Escape', keyCode: 27 },
+  Space: { key: ' ', code: 'Space', keyCode: 32 },
+
+  ArrowUp: { key: 'ArrowUp', code: 'ArrowUp', keyCode: 38 },
+  ArrowDown: { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40 },
+  ArrowLeft: { key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37 },
+  ArrowRight: { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39 },
+
+  Shift: { key: 'Shift', code: 'ShiftLeft', keyCode: 16 },
+  Control: { key: 'Control', code: 'ControlLeft', keyCode: 17 },
+  Alt: { key: 'Alt', code: 'AltLeft', keyCode: 18 },
+  Meta: { key: 'Meta', code: 'MetaLeft', keyCode: 91 },
+
+  Delete: { key: 'Delete', code: 'Delete', keyCode: 46 },
+  Home: { key: 'Home', code: 'Home', keyCode: 36 },
+  End: { key: 'End', code: 'End', keyCode: 35 },
+  PageUp: { key: 'PageUp', code: 'PageUp', keyCode: 33 },
+  PageDown: { key: 'PageDown', code: 'PageDown', keyCode: 34 },
+};
+
 const refStore = new Map();
 let toolRegistry = [];
+let initialViewportDimensions = {
+  width: window.innerWidth,
+  height: window.innerHeight,
+};
 const compactLayoutQuery = window.matchMedia('(max-width: 1080px)');
 const consoleMessageStore = new Map();
 const networkRequestStore = new Map();
@@ -300,6 +337,29 @@ function currentSystemPrompt() {
   return state.handsFreeMode
     ? `${SYSTEM_PROMPT} ${HANDS_FREE_PROMPT}`
     : SYSTEM_PROMPT;
+}
+
+function recentUserMessagesReminder(conversation) {
+  const userMessages = (conversation?.messages || [])
+    .filter((message) => message.role === 'user' && message.content?.trim())
+    .slice(-RECENT_USER_REMINDER_COUNT)
+    .map((message, index) => {
+      const content = truncateText(
+        message.content.trim(),
+        RECENT_USER_MESSAGE_MAX_CHARS,
+      );
+      return `${index + 1}. ${content}`;
+    });
+
+  if (userMessages.length === 0) return null;
+
+  return truncateText(
+    [
+      "Reminder of the user's recent requests. Use this to maintain task continuity, but newer conversation messages still take precedence. Before acting, think through the current objective, page state, next step, and verification plan.",
+      ...userMessages,
+    ].join('\n'),
+    RECENT_USER_REMINDER_MAX_CHARS,
+  );
 }
 
 function loadState() {
@@ -1028,12 +1088,6 @@ async function saveEditedUserMessage(messageId, editedContent) {
   const nextContent = editedContent.trim();
   if (!nextContent) return;
 
-  if (nextContent === originalMessage.content) {
-    state.editingMessageId = null;
-    renderAll();
-    return;
-  }
-
   const willDiscardHistory = messageIndex < conversation.messages.length - 1;
   const shouldEdit = confirm(
     willDiscardHistory
@@ -1112,7 +1166,7 @@ function updateMessage(conversationId, messageId, updater, options = {}) {
 function normalizeToolResult(result) {
   if (typeof result === 'string') return result;
   const text = safeStringify(result, 2);
-  return truncateText(text, 7000);
+  return truncateText(text, 100_000);
 }
 
 function toolRegistryContext(conversationId) {
@@ -1269,14 +1323,22 @@ async function focusSelector(tabId, selector) {
 
 async function capturePageSnapshot(
   tabId,
-  { filter = 'interactive', refId = null, maxChars = 8000 } = {},
+  {
+    filter = 'interactive',
+    refId = null,
+    maxChars = 8000,
+    pageNumber = 0,
+  } = {},
 ) {
   const ref = refId ? refStore.get(refId) : null;
   const selector = ref?.selector || null;
+  const textLimit = Math.max(0, Number(maxChars) || 8000);
+  const textPage = Math.max(0, Math.floor(Number(pageNumber) || 0));
+  const textOffset = textPage * textLimit;
   const results = await chrome.scripting.executeScript({
     target: { tabId },
-    args: [filter, selector, maxChars],
-    func: (snapshotFilter, rootSelector, textLimit) => {
+    args: [filter, selector, textLimit, textOffset],
+    func: (snapshotFilter, rootSelector, limit, offset) => {
       const cssEscape =
         window.CSS?.escape ||
         ((value) => String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&'));
@@ -1350,12 +1412,12 @@ async function capturePageSnapshot(
           selector: buildSelector(element),
           tag,
           role,
-          text: text.slice(0, 220),
+          text: text.slice(0, 100),
           ariaLabel,
           href: element.href || '',
           value:
             typeof element.value === 'string'
-              ? element.value.slice(0, 220)
+              ? element.value.slice(0, 100)
               : '',
           type: element.type || '',
           checked: Boolean(element.checked),
@@ -1394,14 +1456,19 @@ async function capturePageSnapshot(
         .slice(0, 80)
         .map(describeElement);
 
-      const text = (root.innerText || root.textContent || '')
+      const fullText = (root.innerText || root.textContent || '')
         .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, textLimit);
+        .trim();
+      const text = fullText.slice(offset, offset + limit);
       return {
         title: document.title,
         url: location.href,
         text,
+        textOffset: offset,
+        pageNumber: limit > 0 ? Math.floor(offset / limit) : 0,
+        textReturned: text.length,
+        textTotal: fullText.length,
+        hasMoreText: offset + text.length < fullText.length,
         elements,
         focused: describeElement(document.activeElement || document.body),
       };
@@ -1420,11 +1487,22 @@ function registerSnapshotRefs(tabId, snapshot) {
       selector: element.selector,
       label: element.text || element.ariaLabel || element.tag,
     });
+    const { selector, ...visibleElement } = element;
     return {
-      ...element,
+      ...compactObject(visibleElement),
       ref,
     };
   });
+}
+
+function compactObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      ([, entryValue]) =>
+        entryValue !== '' && entryValue != null && entryValue !== false,
+    ),
+  );
 }
 
 function summarizeSnapshot(snapshot, filter, tab) {
@@ -1435,6 +1513,11 @@ function summarizeSnapshot(snapshot, filter, tab) {
     tabId: tab.id,
     filter,
     text: snapshot?.text || '',
+    pageNumber: snapshot?.pageNumber || 0,
+    textOffset: snapshot?.textOffset || 0,
+    textReturned: snapshot?.textReturned || 0,
+    textTotal: snapshot?.textTotal || 0,
+    hasMoreText: Boolean(snapshot?.hasMoreText),
     focused: snapshot?.focused || null,
     elements,
   };
@@ -1549,7 +1632,7 @@ async function formInput(input = {}) {
 
 async function getPageText(input = {}) {
   const tab = await getCurrentTab(input.tabId);
-  const maxChars = Math.max(0, Number(input.max_chars) || 12000);
+  const maxChars = Math.max(0, Number(input.max_chars) || 30_000);
   const [{ result } = {}] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     args: [maxChars],
@@ -1770,7 +1853,8 @@ async function readPage(input = {}) {
   const snapshot = await capturePageSnapshot(tab.id, {
     filter: input.filter || 'interactive',
     refId: input.ref_id || null,
-    maxChars: input.max_chars || 8000,
+    maxChars: input.max_chars || 30_000,
+    pageNumber: input.page_number || 0,
   });
 
   if (!snapshot) {
@@ -1792,7 +1876,7 @@ async function findElements(input = {}) {
   const tab = await getCurrentTab(input.tabId);
   const snapshot = await capturePageSnapshot(tab.id, {
     filter: 'all',
-    maxChars: input.max_chars || 8000,
+    maxChars: input.max_chars || 30_000,
   });
   if (!snapshot || snapshot.error) {
     return snapshot || { error: 'Could not read the page.' };
@@ -1869,19 +1953,105 @@ async function viewportCenter(tabId) {
   return result?.result || { x: 400, y: 300 };
 }
 
+async function currentViewportDimensions(tabId = null) {
+  try {
+    const tab = await getCurrentTab(tabId);
+    const [{ result } = {}] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => ({
+        width: window.innerWidth,
+        height: window.innerHeight,
+      }),
+    });
+    if (Number(result?.width) > 0 && Number(result?.height) > 0) {
+      return result;
+    }
+  } catch {
+    // Some pages, such as browser-internal URLs, do not allow scripting.
+  }
+
+  return {
+    width: window.innerWidth,
+    height: window.innerHeight,
+  };
+}
+
+function scrollDeltasFromInput(input = {}, viewport = initialViewportDimensions) {
+  const rawDeltaX = Number(input.delta_x);
+  const rawDeltaY = Number(input.delta_y);
+  const maxDeltaX = Math.floor(
+    Math.max(0, Number(viewport.width) || 0) * SCROLL_DELTA_VIEWPORT_RATIO,
+  );
+  const maxDeltaY = Math.floor(
+    Math.max(0, Number(viewport.height) || 0) * SCROLL_DELTA_VIEWPORT_RATIO,
+  );
+  const deltaX = Number.isFinite(rawDeltaX) ? rawDeltaX : 0;
+  const deltaY = Number.isFinite(rawDeltaY) ? rawDeltaY : 0;
+
+  return {
+    deltaX:
+      maxDeltaX > 0
+        ? Math.max(-maxDeltaX, Math.min(maxDeltaX, deltaX))
+        : deltaX,
+    deltaY:
+      maxDeltaY > 0
+        ? Math.max(-maxDeltaY, Math.min(maxDeltaY, deltaY))
+        : deltaY,
+    maxDeltaX,
+    maxDeltaY,
+  };
+}
+
+function resolveKey(key) {
+  if (KEY_MAP[key]) return KEY_MAP[key];
+
+  // Printable character
+  if (key.length === 1) {
+    const upper = key.toUpperCase();
+    return {
+      key,
+      code: /^[a-z]$/i.test(key)
+        ? `Key${upper}`
+        : /^[0-9]$/.test(key)
+          ? `Digit${key}`
+          : 'Unidentified',
+      keyCode: upper.charCodeAt(0),
+    };
+  }
+
+  throw new Error(`Unsupported key: ${key}`);
+}
+
 async function sendKeyEvent(tabId, key, modifiers = 0) {
+  const { key: k, code, keyCode } = resolveKey(key);
+
+  // keyDown
   await sendDebuggerCommand(tabId, 'Input.dispatchKeyEvent', {
     type: 'keyDown',
-    key,
-    windowsVirtualKeyCode:
-      key?.length === 1 ? key.toUpperCase().charCodeAt(0) : 0,
+    key: k,
+    code,
+    windowsVirtualKeyCode: keyCode,
+    nativeVirtualKeyCode: keyCode,
     modifiers,
   });
+
+  // text input (IMPORTANT for typing)
+  if (k.length === 1) {
+    await sendDebuggerCommand(tabId, 'Input.dispatchKeyEvent', {
+      type: 'char',
+      key: k,
+      text: k,
+      unmodifiedText: k,
+    });
+  }
+
+  // keyUp
   await sendDebuggerCommand(tabId, 'Input.dispatchKeyEvent', {
     type: 'keyUp',
-    key,
-    windowsVirtualKeyCode:
-      key?.length === 1 ? key.toUpperCase().charCodeAt(0) : 0,
+    key: k,
+    code,
+    windowsVirtualKeyCode: keyCode,
+    nativeVirtualKeyCode: keyCode,
     modifiers,
   });
 }
@@ -1929,9 +2099,17 @@ async function computer(input = {}) {
     }
 
     const point = await resolvePointFromInput(tab.id, input);
-    const deltaY = Math.max(120, Math.abs(Number(input.duration) || 600));
-    await scrollBy(tab.id, debuggerApi, point.x, point.y, 0, deltaY);
-    return { ok: true, action, point, deltaX: 0, deltaY };
+    const viewport = await currentViewportDimensions(tab.id);
+    const deltas = scrollDeltasFromInput(input, viewport);
+    await scrollBy(
+      tab.id,
+      debuggerApi,
+      point.x,
+      point.y,
+      deltas.deltaX,
+      deltas.deltaY,
+    );
+    return { ok: true, action, point, ...deltas };
   }
 
   const point = await resolvePointFromInput(tab.id, input).catch(() => null);
@@ -2017,16 +2195,8 @@ async function computer(input = {}) {
 
   if (action === 'scroll') {
     const scrollPoint = point || (await viewportCenter(tab.id));
-
-    const direction = String(input.scroll_direction || 'down').toLowerCase();
-    const magnitude = Math.max(120, Math.abs(Number(input.duration) || 600));
-    const deltaMap = {
-      up: { deltaX: 0, deltaY: -magnitude },
-      down: { deltaX: 0, deltaY: magnitude },
-      left: { deltaX: -magnitude, deltaY: 0 },
-      right: { deltaX: magnitude, deltaY: 0 },
-    };
-    const deltas = deltaMap[direction] || deltaMap.down;
+    const viewport = await currentViewportDimensions(tab.id);
+    const deltas = scrollDeltasFromInput(input, viewport);
     await scrollBy(
       tab.id,
       debuggerApi,
@@ -2237,6 +2407,7 @@ function toOpenAIMessage(message) {
 function requestMessagesForConversation(conversation) {
   const conversationMessages = conversation.messages || [];
   const repairedMessages = [];
+  const reminder = recentUserMessagesReminder(conversation);
   const toolResponses = new Set(
     conversationMessages
       .filter((message) => message.role === 'tool' && message.tool_call_id)
@@ -2264,10 +2435,15 @@ function requestMessagesForConversation(conversation) {
     }
   }
 
-  return [
+  const messages = [
     { role: 'system', content: currentSystemPrompt() },
     ...repairedMessages.map(toOpenAIMessage),
   ];
+  if (reminder) {
+    messages.push({ role: 'user', content: reminder });
+  }
+
+  return messages;
 }
 
 function repairedConversationMessages(conversation) {
@@ -2358,6 +2534,176 @@ function toGeminiContent(message) {
   return {
     role: 'user',
     parts: [{ text: message.content || '' }],
+  };
+}
+
+function toResponsesTool(tool) {
+  return {
+    type: 'function',
+    name: tool.function.name,
+    description: tool.function.description,
+    parameters: tool.function.parameters,
+    strict: false,
+  };
+}
+
+function toResponsesInput(message) {
+  if (message.role === 'assistant') {
+    const items = [];
+    if (message.content?.trim()) {
+      items.push({ role: 'assistant', content: message.content });
+    }
+
+    for (const call of message.tool_calls || []) {
+      if (!call.id || !call.function?.name) continue;
+      items.push({
+        type: 'function_call',
+        call_id: call.id,
+        name: call.function.name,
+        arguments: call.function.arguments || '{}',
+        status: 'completed',
+      });
+    }
+
+    return items;
+  }
+
+  if (message.role === 'tool') {
+    return [
+      {
+        type: 'function_call_output',
+        call_id: message.tool_call_id,
+        output: message.content || '',
+      },
+    ];
+  }
+
+  return [{ role: 'user', content: message.content || '' }];
+}
+
+function responsesInputForConversation(conversation) {
+  return repairedConversationMessages(conversation).flatMap(toResponsesInput);
+}
+
+function collectResponsesOutput(response, contentRef, toolCalls) {
+  for (const item of response?.output || []) {
+    if (item.type === 'message' && !contentRef.value) {
+      for (const part of item.content || []) {
+        if (part.type === 'output_text' && part.text) {
+          contentRef.value += part.text;
+        }
+      }
+    }
+
+    if (item.type === 'function_call' && item.name) {
+      toolCalls.set(item.id || item.call_id || uid('response_tool'), {
+        id: item.call_id || item.id || uid('response_tool'),
+        type: 'function',
+        function: {
+          name: item.name,
+          arguments: item.arguments || '{}',
+        },
+      });
+    }
+  }
+}
+
+async function callOpenAIResponses(conversation, providerConfig, options = {}) {
+  const model = conversation.model || state.model || getDefaultModel();
+  const tools = await toOpenAIToolDefinitions();
+  const body = {
+    model,
+    instructions: currentSystemPrompt(),
+    input: responsesInputForConversation(conversation),
+    tools: tools.map(toResponsesTool),
+    tool_choice: 'auto',
+    stream: true,
+  };
+
+  const response = await fetch(providerConfig.responsesEndpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${state.apiKey}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    throw new Error(await responseErrorMessage(response, providerConfig.label));
+  }
+
+  const contentRef = { value: '' };
+  const toolCalls = new Map();
+  const partialToolCalls = new Map();
+
+  await readServerSentEvents(response, ({ data }) => {
+    if (!data || data === '[DONE]') return;
+    const event = safeJsonParse(data);
+    if (!event) return;
+
+    if (event.type === 'response.output_text.delta' && event.delta) {
+      contentRef.value += event.delta;
+      options.onTextDelta?.(event.delta);
+      return;
+    }
+
+    if (event.type === 'response.function_call_arguments.delta') {
+      const key = event.item_id || event.output_index || toolCalls.size;
+      const entry = partialToolCalls.get(key) || {
+        id: event.call_id || event.item_id || uid('response_tool'),
+        type: 'function',
+        function: { name: event.name || '', arguments: '' },
+      };
+      if (event.name) entry.function.name = event.name;
+      entry.function.arguments += event.delta || '';
+      partialToolCalls.set(key, entry);
+      return;
+    }
+
+    if (event.type === 'response.function_call_arguments.done') {
+      const key = event.item_id || event.output_index || toolCalls.size;
+      const entry = partialToolCalls.get(key) || {
+        id: event.call_id || event.item_id || uid('response_tool'),
+        type: 'function',
+        function: { name: '', arguments: '' },
+      };
+      if (event.name) entry.function.name = event.name;
+      entry.function.arguments =
+        event.arguments || entry.function.arguments || '{}';
+      partialToolCalls.set(key, entry);
+      return;
+    }
+
+    if (event.type === 'response.output_item.done') {
+      const item = event.item;
+      if (item?.type === 'function_call' && item.name) {
+        toolCalls.set(item.id || item.call_id || uid('response_tool'), {
+          id: item.call_id || item.id || uid('response_tool'),
+          type: 'function',
+          function: {
+            name: item.name,
+            arguments: item.arguments || '{}',
+          },
+        });
+      }
+      return;
+    }
+
+    if (event.type === 'response.completed') {
+      collectResponsesOutput(event.response, contentRef, toolCalls);
+    }
+  });
+
+  for (const entry of partialToolCalls.values()) {
+    if (entry.function.name && !toolCalls.has(entry.id)) {
+      toolCalls.set(entry.id, entry);
+    }
+  }
+
+  return {
+    content: contentRef.value,
+    tool_calls: [...toolCalls.values()].filter((call) => call.function?.name),
   };
 }
 
@@ -2570,6 +2916,10 @@ async function callGemini(conversation, providerConfig, options = {}) {
 async function callProvider(conversation, options = {}) {
   const providerId = getProviderId(conversation.provider || state.provider);
   const providerConfig = getProvider(providerId);
+
+  if (providerConfig === PROVIDERS.openai) {
+    return callOpenAIResponses(conversation, providerConfig, options);
+  }
 
   if (providerConfig.adapter === 'anthropic') {
     return callAnthropic(conversation, providerConfig, options);
@@ -2911,10 +3261,13 @@ function normalizeConversationModels() {
   }
 }
 
-function initialize() {
+async function initialize() {
   loadState();
   normalizeConversationModels();
-  toolRegistry = createToolRegistry(toolImpl);
+  initialViewportDimensions = await currentViewportDimensions();
+  toolRegistry = createToolRegistry(toolImpl, {
+    viewport: initialViewportDimensions,
+  });
   bindEvents();
   renderAll();
   setStatus('Idle');

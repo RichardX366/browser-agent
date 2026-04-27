@@ -110,6 +110,7 @@ async function dispatchMouseEvent(tabId, debuggerApi, options) {
     button = 'left',
     clickCount = 1,
     modifiers = 0,
+    ...eventOptions
   } = options;
   return debuggerApi.sendCommand(tabId, 'Input.dispatchMouseEvent', {
     type,
@@ -118,6 +119,7 @@ async function dispatchMouseEvent(tabId, debuggerApi, options) {
     button,
     clickCount,
     modifiers,
+    ...eventOptions,
   });
 }
 
@@ -220,7 +222,10 @@ function createTabsContextTool(getTabsContext) {
     {
       type: 'object',
       properties: {
-        tabId: { type: 'number', description: 'Optional tab to focus on.' },
+        tabId: {
+          type: 'number',
+          description: 'Optional tab to focus on. Defaults to the active tab.',
+        },
       },
       required: [],
     },
@@ -249,7 +254,7 @@ function createTabControlTool(tabControlImpl) {
         tabId: {
           type: 'number',
           description:
-            'Target tab id. For navigate/switch/close, omitted means the active tab.',
+            'Target tab id. For navigate/switch/close, defaults to the active tab when omitted.',
         },
         index: {
           type: 'number',
@@ -257,7 +262,8 @@ function createTabControlTool(tabControlImpl) {
         },
         active: {
           type: 'boolean',
-          description: 'Whether an opened tab should become active.',
+          description:
+            'Whether an opened tab should become active. Defaults to true.',
         },
       },
       required: ['action'],
@@ -269,7 +275,7 @@ function createTabControlTool(tabControlImpl) {
 function createReadPageTool(readPageImpl) {
   return makeTool(
     'read_page',
-    'Get an accessibility tree representation of elements on the page.',
+    'Get an accessibility tree representation of elements on the page. If the page text is too large, it will get truncated. If you cannot find what you want to due to truncation, use page_number to page through content in max_chars-sized chunks.',
     {
       type: 'object',
       properties: {
@@ -277,11 +283,11 @@ function createReadPageTool(readPageImpl) {
           type: 'string',
           enum: ['interactive', 'all'],
           description:
-            'Which elements to include: interactive controls only, or all visible elements.',
+            "Which elements to include: interactive controls only, or all visible elements. Defaults to 'interactive'.",
         },
         tabId: {
           type: 'number',
-          description: 'Browser tab id to inspect.',
+          description: 'Browser tab id to inspect. Defaults to the active tab.',
         },
         depth: {
           type: 'number',
@@ -289,11 +295,18 @@ function createReadPageTool(readPageImpl) {
         },
         ref_id: {
           type: 'string',
-          description: 'Optional prefix or id hint for generated element refs.',
+          description:
+            'Optional prefix or id hint for generated element refs. Defaults to none.',
         },
         max_chars: {
           type: 'number',
-          description: 'Maximum characters of page data to return.',
+          description:
+            'Maximum characters of page data to return. Defaults to 50000.',
+        },
+        page_number: {
+          type: 'number',
+          description:
+            'Zero-based page number for long page text. Each page contains up to max_chars characters. Defaults to 0.',
         },
       },
       required: [],
@@ -316,7 +329,7 @@ function createFindTool(findImpl) {
         },
         tabId: {
           type: 'number',
-          description: 'Browser tab id to search.',
+          description: 'Browser tab id to search. Defaults to the active tab.',
         },
       },
       required: ['query'],
@@ -342,20 +355,42 @@ function pointTargetProperties() {
     },
     tabId: {
       type: 'number',
-      description: 'Browser tab id to control. Omit to use the active tab.',
+      description: 'Browser tab id to control. Defaults to the active tab.',
     },
   };
 }
 
-function createComputerActionTool(name, action, description, inputSchema, computerImpl) {
+function createComputerActionTool(
+  name,
+  action,
+  description,
+  inputSchema,
+  computerImpl,
+) {
   return makeTool(name, description, inputSchema, async (input, context) =>
     computerImpl({ ...input, action }, context),
   );
 }
 
-function createComputerActionTools(computerImpl) {
+function viewportDimensionText(value) {
+  return Number.isFinite(Number(value)) && Number(value) > 0
+    ? `${Math.round(Number(value))}px`
+    : 'unknown';
+}
+
+function viewportScrollCapText(value) {
+  return Number.isFinite(Number(value)) && Number(value) > 0
+    ? `${Math.floor(Number(value) * 0.7)}px`
+    : 'unknown';
+}
+
+function createComputerActionTools(computerImpl, viewport = {}) {
   const runComputer =
     computerImpl || (async () => ({ error: 'computer not implemented' }));
+  const viewportWidth = viewportDimensionText(viewport.width);
+  const viewportHeight = viewportDimensionText(viewport.height);
+  const viewportWidthCap = viewportScrollCapText(viewport.width);
+  const viewportHeightCap = viewportScrollCapText(viewport.height);
 
   return [
     createComputerActionTool(
@@ -436,7 +471,8 @@ function createComputerActionTools(computerImpl) {
           },
           tabId: {
             type: 'number',
-            description: 'Browser tab id to control. Omit to use the active tab.',
+            description:
+              'Browser tab id to control. Defaults to the active tab.',
           },
         },
         required: ['start_coordinate', 'coordinate'],
@@ -446,23 +482,24 @@ function createComputerActionTools(computerImpl) {
     createComputerActionTool(
       'scroll',
       'scroll',
-      'Scroll the page in a direction. Use scroll_to when you need to bring a specific element into view.',
+      'Scroll the page by explicit wheel deltas. Positive delta_y scrolls down; negative delta_y scrolls up. Positive delta_x scrolls right; negative delta_x scrolls left. Use scroll_to when you need to bring a specific element into view.',
       {
         type: 'object',
         properties: {
-          scroll_direction: {
-            type: 'string',
-            enum: ['up', 'down', 'left', 'right'],
-            description: 'Scroll direction. Defaults to down.',
-          },
-          duration: {
+          delta_x: {
             type: 'number',
             description:
-              'Scroll magnitude in pixels. Omit for a normal page-sized scroll.',
+              `Horizontal wheel delta in pixels. Positive scrolls right; negative scrolls left. The current viewport width is ${viewportWidth}; values are enforced to +/- 70% of that width, currently +/- ${viewportWidthCap}. Defaults to 0.`,
+          },
+          delta_y: {
+            type: 'number',
+            description:
+              `Vertical wheel delta in pixels. Positive scrolls down; negative scrolls up. The current viewport height is ${viewportHeight}; values are enforced to +/- 70% of that height, currently +/- ${viewportHeightCap}. Defaults to 0.`,
           },
           tabId: {
             type: 'number',
-            description: 'Browser tab id to control. Omit to use the active tab.',
+            description:
+              'Browser tab id to control. Defaults to the active tab.',
           },
         },
         required: [],
@@ -477,11 +514,6 @@ function createComputerActionTools(computerImpl) {
         type: 'object',
         properties: {
           ...pointTargetProperties(),
-          duration: {
-            type: 'number',
-            description:
-              'Fallback scroll magnitude in pixels when a coordinate is used.',
-          },
         },
         required: [],
       },
@@ -518,11 +550,12 @@ function createComputerActionTools(computerImpl) {
           modifiers: {
             type: 'number',
             description:
-              'Optional Chrome debugger modifier bitmask for Shift/Control/Alt/Meta.',
+              'Optional Chrome debugger modifier bitmask for Shift/Control/Alt/Meta. Defaults to 0.',
           },
           tabId: {
             type: 'number',
-            description: 'Browser tab id to control. Omit to use the active tab.',
+            description:
+              'Browser tab id to control. Defaults to the active tab.',
           },
         },
         required: ['text'],
@@ -542,7 +575,8 @@ function createComputerActionTools(computerImpl) {
           },
           tabId: {
             type: 'number',
-            description: 'Browser tab id to control. Omit to use the active tab.',
+            description:
+              'Browser tab id to control. Defaults to the active tab.',
           },
         },
         required: ['duration'],
@@ -577,7 +611,8 @@ function createUploadImageTool(uploadImageImpl) {
         },
         tabId: {
           type: 'number',
-          description: 'Browser tab id containing the upload target.',
+          description:
+            'Browser tab id containing the upload target. Defaults to the active tab.',
         },
         filename: {
           type: 'string',
@@ -600,7 +635,7 @@ function createWaitTool(waitImpl) {
         duration: {
           type: 'number',
           description:
-            'How long to wait. Values under 100 are treated as seconds; larger values are milliseconds.',
+            'How long to wait. Values under 100 are treated as seconds; larger values are milliseconds. Defaults to 1 second.',
         },
       },
       required: [],
@@ -640,7 +675,7 @@ function createShortcutsExecuteTool(shortcutsExecuteImpl) {
   );
 }
 
-function createToolRegistry(impl = {}) {
+function createToolRegistry(impl = {}, options = {}) {
   const passthrough = (name) =>
     impl[name] || (async () => ({ error: `${name} not implemented` }));
 
@@ -655,7 +690,7 @@ function createToolRegistry(impl = {}) {
     ),
     createFunctionTool(
       'javascript_tool',
-      'Execute JavaScript code in the context of the current page.',
+      'Execute JavaScript code in the context of the current page. Do not use this tool if you can use user interaction to accomplish your goal. This should be reserved for complicated things.',
       {
         type: 'object',
         properties: {
@@ -670,7 +705,8 @@ function createToolRegistry(impl = {}) {
           },
           tabId: {
             type: 'number',
-            description: 'Browser tab id in which to execute the JavaScript.',
+            description:
+              'Browser tab id in which to execute the JavaScript. Defaults to the active tab.',
           },
         },
         required: ['action', 'text', 'tabId'],
@@ -697,7 +733,8 @@ function createToolRegistry(impl = {}) {
           },
           tabId: {
             type: 'number',
-            description: 'Browser tab id containing the file input.',
+            description:
+              'Browser tab id containing the file input. Defaults to the active tab.',
           },
         },
         required: ['paths', 'ref', 'tabId'],
@@ -726,7 +763,8 @@ function createToolRegistry(impl = {}) {
           },
           tabId: {
             type: 'number',
-            description: 'Browser tab id containing the form field.',
+            description:
+              'Browser tab id containing the form field. Defaults to the active tab.',
           },
         },
         required: ['ref', 'value', 'tabId'],
@@ -741,11 +779,13 @@ function createToolRegistry(impl = {}) {
         properties: {
           tabId: {
             type: 'number',
-            description: 'Browser tab id to read text from.',
+            description:
+              'Browser tab id to read text from. Defaults to the active tab.',
           },
           max_chars: {
             type: 'number',
-            description: 'Maximum number of text characters to return.',
+            description:
+              'Maximum number of text characters to return. Defaults to 50000.',
           },
         },
         required: ['tabId'],
@@ -765,12 +805,12 @@ function createToolRegistry(impl = {}) {
           },
           tabId: {
             type: 'number',
-            description: 'Browser tab id to navigate.',
+            description: 'Browser tab id to navigate. Defaults to the active tab.',
           },
           force: {
             type: 'boolean',
             description:
-              'Reserved flag for callers that need to force navigation.',
+              'Reserved flag for callers that need to force navigation. Defaults to false.',
           },
         },
         required: ['url', 'tabId'],
@@ -786,24 +826,27 @@ function createToolRegistry(impl = {}) {
           tabId: {
             type: 'number',
             description:
-              'Browser tab id whose console messages should be read.',
+              'Browser tab id whose console messages should be read. Defaults to the active tab.',
           },
           onlyErrors: {
             type: 'boolean',
-            description: 'When true, return only error-like console entries.',
+            description:
+              'When true, return only error-like console entries. Defaults to false.',
           },
           clear: {
             type: 'boolean',
-            description: 'When true, clear stored messages after reading.',
+            description:
+              'When true, clear stored messages after reading. Defaults to false.',
           },
           pattern: {
             type: 'string',
             description:
-              'Case-insensitive regular expression used to filter message text.',
+              'Case-insensitive regular expression used to filter message text. Defaults to no filter.',
           },
           limit: {
             type: 'number',
-            description: 'Maximum number of recent messages to return.',
+            description:
+              'Maximum number of recent messages to return. Defaults to 100.',
           },
         },
         required: ['tabId'],
@@ -819,20 +862,22 @@ function createToolRegistry(impl = {}) {
           tabId: {
             type: 'number',
             description:
-              'Browser tab id whose network requests should be read.',
+              'Browser tab id whose network requests should be read. Defaults to the active tab.',
           },
           urlPattern: {
             type: 'string',
             description:
-              'Case-insensitive regular expression used to filter request URLs.',
+              'Case-insensitive regular expression used to filter request URLs. Defaults to no filter.',
           },
           clear: {
             type: 'boolean',
-            description: 'When true, clear stored requests after reading.',
+            description:
+              'When true, clear stored requests after reading. Defaults to false.',
           },
           limit: {
             type: 'number',
-            description: 'Maximum number of recent requests to return.',
+            description:
+              'Maximum number of recent requests to return. Defaults to 100.',
           },
         },
         required: ['tabId'],
@@ -856,7 +901,7 @@ function createToolRegistry(impl = {}) {
           tabId: {
             type: 'number',
             description:
-              'Browser tab id used to identify the window to resize.',
+              'Browser tab id used to identify the window to resize. Defaults to the active tab.',
           },
         },
         required: ['width', 'height', 'tabId'],
@@ -896,7 +941,7 @@ function createToolRegistry(impl = {}) {
       },
       passthrough('updatePlan'),
     ),
-    ...createComputerActionTools(impl.computer),
+    ...createComputerActionTools(impl.computer, options.viewport),
     createWaitTool(
       impl.wait || (async () => ({ error: 'wait not implemented' })),
     ),
