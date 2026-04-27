@@ -1,0 +1,41 @@
+{
+  "action": {
+    "default_title": "Browser Agent"
+  },
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "commands": {
+    "toggle-side-panel": {
+      "description": "Toggle the browser agent side panel",
+      "suggested_key": {
+        "default": "Ctrl+E",
+        "mac": "Command+E"
+      }
+    }
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' https://api.openai.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:;"
+  },
+  "description": "A browser agent for interacting with web content.",
+  "host_permissions": ["\u003Call_urls>"],
+  "manifest_version": 3,
+  "minimum_chrome_version": "116",
+  "name": "Browser Agent",
+  "permissions": [
+    "sidePanel",
+    "storage",
+    "activeTab",
+    "scripting",
+    "debugger",
+    "tabs"
+  ],
+  "icons": {
+    "128": "icon-128.png"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "version": "1.0.0"
+}

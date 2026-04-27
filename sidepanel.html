@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenAI Browser Agent</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>
+
+      <aside id="sidebar" class="sidebar" aria-label="Conversations">
+        <div class="sidebar-actions">
+          <button
+            id="newConversationButton"
+            class="primary-button"
+            type="button"
+          >
+            New conversation
+          </button>
+          <button
+            id="settingsButton"
+            class="icon-button"
+            type="button"
+            aria-label="Open settings"
+            title="Settings"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"
+              ></path>
+              <path
+                d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2.06 2.06 0 0 1-2.91 2.91l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2.06 2.06 0 0 1-4.12 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06A2.06 2.06 0 0 1 4 16.85l.06-.06A1.7 1.7 0 0 0 4.4 15a1.7 1.7 0 0 0-1.55-1H2.75a2.06 2.06 0 0 1 0-4.12h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87L4 6.95A2.06 2.06 0 0 1 6.91 4l.06.06a1.7 1.7 0 0 0 1.87.34 1.7 1.7 0 0 0 1-1.55V2.75a2.06 2.06 0 0 1 4.12 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06A2.06 2.06 0 0 1 20 6.91l-.06.06a1.7 1.7 0 0 0-.34 1.87 1.7 1.7 0 0 0 1.55 1h.09a2.06 2.06 0 0 1 0 4.12h-.09A1.7 1.7 0 0 0 19.4 15Z"
+              ></path>
+            </svg>
+          </button>
+        </div>
+
+        <div
+          id="conversationList"
+          class="conversation-list"
+          aria-label="Saved conversations"
+        ></div>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <button
+            id="conversationDrawerButton"
+            class="icon-button drawer-toggle"
+            type="button"
+            aria-label="Open conversations"
+            aria-controls="sidebar"
+            aria-expanded="false"
+            title="Conversations"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 6h16"></path>
+              <path d="M4 12h16"></path>
+              <path d="M4 18h16"></path>
+            </svg>
+          </button>
+          <span id="statusPill" class="status-pill">Idle</span>
+        </header>
+
+        <section id="chatPage" class="workspace-page">
+          <section
+            id="transcript"
+            class="transcript"
+            aria-live="polite"
+          ></section>
+
+          <form id="composer" class="composer">
+            <textarea
+              id="promptInput"
+              rows="4"
+              placeholder="Ask the agent to click, type, inspect, or navigate..."
+              spellcheck="false"
+            ></textarea>
+            <button id="sendButton" type="submit">
+              <svg
+                fill="#fff"
+                viewBox="0 0 32 32"
+                id="icon"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <g id="SVGRepo_bgCarrier" stroke-width="0"></g>
+                <g
+                  id="SVGRepo_tracerCarrier"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                ></g>
+                <g id="SVGRepo_iconCarrier">
+                  <defs>
+                    <style>
+                      .cls-1 {
+                        fill: none;
+                      }
+                    </style>
+                  </defs>
+                  <title>send--alt--filled</title>
+                  <path
+                    d="M27.71,4.29a1,1,0,0,0-1.05-.23l-22,8a1,1,0,0,0,0,1.87l8.59,3.43L19.59,11,21,12.41l-6.37,6.37,3.44,8.59A1,1,0,0,0,19,28h0a1,1,0,0,0,.92-.66l8-22A1,1,0,0,0,27.71,4.29Z"
+                  ></path>
+                  <rect
+                    id="_Transparent_Rectangle_"
+                    data-name="&lt;Transparent Rectangle&gt;"
+                    class="cls-1"
+                    width="32"
+                    height="32"
+                  ></rect>
+                </g>
+              </svg>
+            </button>
+          </form>
+        </section>
+
+        <section id="settingsPage" class="workspace-page settings-page" hidden>
+          <div class="settings-panel">
+            <div class="settings-header">
+              <div>
+                <h1>Settings</h1>
+                <p>API access and model preferences are saved locally.</p>
+              </div>
+              <button
+                id="closeSettingsButton"
+                class="ghost-button"
+                type="button"
+              >
+                Back
+              </button>
+            </div>
+
+            <label class="field">
+              <span>OpenAI API token</span>
+              <input
+                id="apiKeyInput"
+                type="password"
+                placeholder="sk-..."
+                autocomplete="off"
+                spellcheck="false"
+              />
+            </label>
+
+            <label class="field">
+              <span>Model</span>
+              <select id="modelSelect">
+                <option value="gpt-5.4-mini">gpt-5.4-mini</option>
+                <option value="gpt-5.4">gpt-5.4</option>
+                <option value="gpt-4.1">gpt-4.1</option>
+                <option value="gpt-4.1-mini">gpt-4.1-mini</option>
+                <option value="gpt-4.1-nano">gpt-4.1-nano</option>
+                <option value="custom">Custom</option>
+              </select>
+            </label>
+
+            <label id="customModelField" class="field" hidden>
+              <span>Custom model</span>
+              <input
+                id="customModelInput"
+                type="text"
+                placeholder="model-name"
+                autocomplete="off"
+                spellcheck="false"
+              />
+            </label>
+
+            <div class="status-row">
+              <span class="status-note"
+                >Token and conversations stay in localStorage.</span
+              >
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="sidepanel.js"></script>
+  </body>
+</html>
