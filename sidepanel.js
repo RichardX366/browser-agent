@@ -83,7 +83,7 @@ const SYSTEM_PROMPT = [
   "You are a browser agent controlling the user's current browser tab.",
   'Use browser tools to inspect the page, choose actions carefully, and explain only concise, observable reasoning when it helps the user follow along.',
   'If you need to inspect the page state, call the page-reading or tab-context tools first.',
-  "Before saying the task is done, inspect or otherwise verify the current page state so your final answer reflects what is actually visible.",
+  'Before saying the task is done, inspect or otherwise verify the current page state so your final answer reflects what is actually visible.',
   'When you make tool calls, keep the user-visible planning text short and practical.',
   'Never claim a browser action happened unless the corresponding tool call completed successfully.',
   'Surface tool calls, tool outputs, and any visible reasoning summaries in the transcript.',
@@ -105,7 +105,6 @@ const state = {
   conversationSearch: '',
   handsFreeMode: false,
   editingMessageId: null,
-  editingMessageWidth: 0,
 };
 
 const refStore = new Map();
@@ -723,8 +722,6 @@ function findToolResponse(messages, call) {
 function renderUserMessageEditor(message) {
   const form = document.createElement('form');
   form.className = 'message-edit-form';
-  const measuredWidth = Math.max(280, Math.ceil(state.editingMessageWidth || 0));
-  form.style.width = `${measuredWidth}px`;
 
   const textarea = document.createElement('textarea');
   textarea.className = 'message-edit-input';
@@ -739,9 +736,8 @@ function renderUserMessageEditor(message) {
   cancelButton.type = 'button';
   cancelButton.className = 'mini-button';
   cancelButton.textContent = 'Cancel';
-      cancelButton.addEventListener('click', () => {
+  cancelButton.addEventListener('click', () => {
     state.editingMessageId = null;
-    state.editingMessageWidth = 0;
     renderAll();
   });
 
@@ -762,7 +758,6 @@ function renderUserMessageEditor(message) {
     if (event.key === 'Escape') {
       event.preventDefault();
       state.editingMessageId = null;
-      state.editingMessageWidth = 0;
       renderAll();
     }
     if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
@@ -826,8 +821,8 @@ function renderMessage(message, messages = []) {
           <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
         </svg>
       `;
-      editButton.addEventListener('click', (event) => {
-        startEditingUserMessage(message.id, event.currentTarget);
+      editButton.addEventListener('click', () => {
+        startEditingUserMessage(message.id);
       });
       actions.append(editButton);
       article.append(bubble, actions);
@@ -1014,14 +1009,8 @@ function clearAllConversations() {
   showChatPage();
 }
 
-function startEditingUserMessage(messageId, triggerElement = null) {
+function startEditingUserMessage(messageId) {
   if (state.isRunning || !messageId) return;
-  const bubble = triggerElement
-    ?.closest('.user-message')
-    ?.querySelector('.user-message-bubble');
-  state.editingMessageWidth = bubble
-    ? Math.ceil(bubble.getBoundingClientRect().width)
-    : 0;
   state.editingMessageId = messageId;
   renderAll();
 }
@@ -1041,7 +1030,6 @@ async function saveEditedUserMessage(messageId, editedContent) {
 
   if (nextContent === originalMessage.content) {
     state.editingMessageId = null;
-    state.editingMessageWidth = 0;
     renderAll();
     return;
   }
@@ -1055,7 +1043,6 @@ async function saveEditedUserMessage(messageId, editedContent) {
   if (!shouldEdit) return;
 
   state.editingMessageId = null;
-  state.editingMessageWidth = 0;
   conversation.messages = conversation.messages.slice(0, messageIndex + 1);
   conversation.messages[messageIndex] = {
     ...originalMessage,
@@ -2374,7 +2361,11 @@ function toGeminiContent(message) {
   };
 }
 
-async function callOpenAICompatible(conversation, providerConfig, options = {}) {
+async function callOpenAICompatible(
+  conversation,
+  providerConfig,
+  options = {},
+) {
   const model = conversation.model || state.model || getDefaultModel();
   const body = {
     model,
@@ -2459,7 +2450,8 @@ async function callAnthropic(conversation, providerConfig, options = {}) {
     body: JSON.stringify({
       model: conversation.model || state.model || getDefaultModel('anthropic'),
       system: currentSystemPrompt(),
-      messages: repairedConversationMessages(conversation).map(toAnthropicMessage),
+      messages:
+        repairedConversationMessages(conversation).map(toAnthropicMessage),
       tools: await toAnthropicToolDefinitions(),
       tool_choice: { type: 'auto' },
       max_tokens: 4096,
@@ -2677,12 +2669,19 @@ async function runConversation(conversationId) {
   const conversation = getConversation(conversationId);
   if (!conversation) return;
 
-  const providerLabel = getProvider(conversation.provider || state.provider).label;
-  state.apiKey = state.apiKeys?.[conversation.provider || state.provider] || state.apiKey || '';
+  const providerLabel = getProvider(
+    conversation.provider || state.provider,
+  ).label;
+  state.apiKey =
+    state.apiKeys?.[conversation.provider || state.provider] ||
+    state.apiKey ||
+    '';
 
   if (!state.apiKey.trim()) {
     setStatus('Add an API key first');
-    throw new Error(`Add your ${providerLabel} API key before sending a prompt.`);
+    throw new Error(
+      `Add your ${providerLabel} API key before sending a prompt.`,
+    );
   }
 
   setRunning(true);
@@ -2727,10 +2726,14 @@ async function runConversation(conversationId) {
       const assistantMessage = normalizeAssistantMessage(choice);
 
       if (streamedAssistantMessage) {
-        updateMessage(conversationId, streamedAssistantMessage.id, (message) => {
-          message.content = assistantMessage.content;
-          message.tool_calls = assistantMessage.tool_calls;
-        });
+        updateMessage(
+          conversationId,
+          streamedAssistantMessage.id,
+          (message) => {
+            message.content = assistantMessage.content;
+            message.tool_calls = assistantMessage.tool_calls;
+          },
+        );
       } else {
         appendMessage(conversationId, assistantMessage);
       }
@@ -2851,7 +2854,9 @@ function bindEvents() {
   elements.modelSelect.addEventListener('change', () => {
     if (elements.modelSelect.value === 'custom') {
       elements.customModelField.hidden = false;
-      elements.customModelInput.value = getProviderModelOptions().includes(state.model)
+      elements.customModelInput.value = getProviderModelOptions().includes(
+        state.model,
+      )
         ? ''
         : state.model;
       elements.customModelInput.focus();
@@ -2896,9 +2901,12 @@ function bindEvents() {
 
 function normalizeConversationModels() {
   for (const conversation of state.conversations) {
-    conversation.provider = getProviderId(conversation.provider || state.provider);
+    conversation.provider = getProviderId(
+      conversation.provider || state.provider,
+    );
     if (!conversation.model) {
-      conversation.model = state.model || getDefaultModel(conversation.provider);
+      conversation.model =
+        state.model || getDefaultModel(conversation.provider);
     }
   }
 }
