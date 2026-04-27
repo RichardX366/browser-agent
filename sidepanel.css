@@ -152,9 +152,11 @@ select {
 
 .conversation-select:focus-visible,
 .conversation-delete:focus-visible,
+.message-edit-button:focus-visible,
 .icon-button:focus-visible,
 .primary-button:focus-visible,
-.ghost-button:focus-visible {
+.ghost-button:focus-visible,
+.danger-button:focus-visible {
   outline: 2px solid rgba(110, 231, 255, 0.75);
   outline-offset: 2px;
 }
@@ -350,6 +352,23 @@ textarea:focus {
   width: min(100%, 760px);
 }
 
+.message.user-message {
+  justify-self: end;
+  width: auto;
+  max-width: min(78%, 720px);
+  display: grid;
+  gap: 3px;
+  justify-items: end;
+}
+
+.user-message-bubble {
+  border-radius: 18px;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  font-size: 15px;
+}
+
 .message.user {
   justify-self: end;
   width: auto;
@@ -359,6 +378,58 @@ textarea:focus {
   background: rgba(255, 255, 255, 0.08);
   color: var(--text);
   font-size: 15px;
+}
+
+.message-actions {
+  display: flex;
+  justify-content: flex-end;
+  height: 0px;
+  padding-right: 2px;
+}
+
+.message-edit-button {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease,
+    background 120ms ease;
+}
+
+.message.user-message:hover .message-edit-button,
+.message.user-message:focus-within .message-edit-button {
+  opacity: 1;
+}
+
+.message-edit-button:hover {
+  color: var(--accent);
+  border-color: rgba(110, 231, 255, 0.34);
+  background: rgba(110, 231, 255, 0.1);
+}
+
+.message-edit-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+.message-edit-button svg {
+  width: 11px;
+  height: 11px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .message.assistant {
@@ -535,6 +606,7 @@ textarea:focus {
 
 .primary-button,
 .ghost-button,
+.danger-button,
 .icon-button,
 .conversation-delete {
   border: 1px solid transparent;
@@ -558,6 +630,19 @@ textarea:focus {
   background: rgba(255, 255, 255, 0.04);
   color: var(--text);
   border-color: rgba(148, 163, 184, 0.18);
+}
+
+.danger-button {
+  background: rgba(251, 113, 133, 0.1);
+  color: var(--danger);
+  border-color: rgba(251, 113, 133, 0.32);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.danger-button:hover {
+  background: rgba(251, 113, 133, 0.16);
+  border-color: rgba(251, 113, 133, 0.5);
 }
 
 .icon-button,
@@ -609,6 +694,7 @@ textarea:focus {
 
 .primary-button:disabled,
 .ghost-button:disabled,
+.danger-button:disabled,
 .icon-button:disabled,
 .conversation-delete:disabled,
 .conversation-select:disabled,

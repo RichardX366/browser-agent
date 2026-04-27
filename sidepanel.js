@@ -125,6 +125,7 @@ const elements = {
   modelSelect: document.getElementById('modelSelect'),
   customModelField: document.getElementById('customModelField'),
   customModelInput: document.getElementById('customModelInput'),
+  clearConversationsButton: document.getElementById('clearConversationsButton'),
   statusPill: document.getElementById('statusPill'),
   transcript: document.getElementById('transcript'),
   composer: document.getElementById('composer'),
@@ -365,6 +366,7 @@ function setRunning(isRunning) {
   elements.modelSelect.disabled = isRunning;
   elements.customModelInput.disabled = isRunning;
   elements.apiKeyInput.disabled = isRunning;
+  elements.clearConversationsButton.disabled = isRunning;
   document
     .querySelectorAll('.conversation-delete')
     .forEach((button) => (button.disabled = isRunning));
@@ -608,6 +610,7 @@ function findToolResponse(messages, call) {
 function renderMessage(message, messages = []) {
   const article = document.createElement('article');
   article.className = `message ${message.role}`;
+  article.dataset.messageId = message.id || '';
 
   if (message.role === 'tool') {
     article.append(
@@ -625,6 +628,35 @@ function renderMessage(message, messages = []) {
   const body = document.createElement('div');
   body.className = 'message-content';
   body.innerHTML = escapeHtml(message.content || '').replace(/\n/g, '<br />');
+
+  if (message.role === 'user') {
+    article.className = 'message user-message';
+    const bubble = document.createElement('div');
+    bubble.className = 'user-message-bubble';
+    bubble.append(body);
+
+    const actions = document.createElement('div');
+    actions.className = 'message-actions';
+
+    const editButton = document.createElement('button');
+    editButton.type = 'button';
+    editButton.className = 'message-edit-button';
+    editButton.disabled = state.isRunning;
+    editButton.title = 'Edit message';
+    editButton.setAttribute('aria-label', 'Edit message');
+    editButton.innerHTML = `
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 20h9"></path>
+        <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
+      </svg>
+    `;
+    editButton.addEventListener('click', () => {
+      editUserMessage(message.id);
+    });
+    actions.append(editButton);
+    article.append(bubble, actions);
+    return article;
+  }
 
   if (message.role === 'assistant' && message.tool_calls?.length) {
     if (message.content?.trim()) {
@@ -783,6 +815,73 @@ function deleteConversation(conversationId = state.activeConversationId) {
   }
   persistState();
   renderAll();
+}
+
+function clearAllConversations() {
+  if (state.isRunning) return;
+  const shouldClear = confirm(
+    'Clear all conversations? This keeps your provider settings and API keys.',
+  );
+  if (!shouldClear) return;
+
+  const conversation = createConversation();
+  conversation.provider = state.provider;
+  conversation.model = state.model;
+  state.conversations = [conversation];
+  state.activeConversationId = conversation.id;
+  persistState();
+  renderAll();
+  showChatPage();
+}
+
+async function editUserMessage(messageId) {
+  if (state.isRunning || !messageId) return;
+
+  const conversation = getActiveConversation();
+  const messageIndex = conversation.messages.findIndex(
+    (message) => message.id === messageId && message.role === 'user',
+  );
+  if (messageIndex === -1) return;
+
+  const originalMessage = conversation.messages[messageIndex];
+  const editedContent = prompt('Edit message', originalMessage.content || '');
+  if (editedContent == null) return;
+
+  const nextContent = editedContent.trim();
+  if (!nextContent || nextContent === originalMessage.content) return;
+
+  const willDiscardHistory = messageIndex < conversation.messages.length - 1;
+  const shouldEdit = confirm(
+    willDiscardHistory
+      ? 'Save this edit and discard everything after this message?'
+      : 'Save this edit and rerun from this message?',
+  );
+  if (!shouldEdit) return;
+
+  conversation.messages = conversation.messages.slice(0, messageIndex + 1);
+  conversation.messages[messageIndex] = {
+    ...originalMessage,
+    content: nextContent,
+    editedAt: Date.now(),
+  };
+  conversation.updatedAt = Date.now();
+
+  const firstUserMessage = conversation.messages.find(
+    (message) => message.role === 'user',
+  );
+  if (firstUserMessage?.id === messageId) {
+    conversation.title = truncateText(nextContent, 42);
+  }
+
+  updateConversationModel(conversation);
+  persistState();
+  renderAll();
+
+  try {
+    await runConversation(conversation.id);
+  } catch {
+    // The error is already surfaced in the transcript.
+  }
 }
 
 function appendMessage(conversationId, message) {
@@ -2411,6 +2510,10 @@ function bindEvents() {
   elements.drawerBackdrop.addEventListener('click', closeConversationDrawer);
   elements.settingsButton.addEventListener('click', showSettingsPage);
   elements.closeSettingsButton.addEventListener('click', showChatPage);
+  elements.clearConversationsButton.addEventListener(
+    'click',
+    clearAllConversations,
+  );
 
   elements.providerSelect.addEventListener('change', () => {
     setProvider(elements.providerSelect.value || DEFAULT_PROVIDER);
