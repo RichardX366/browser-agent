@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>OpenAI Browser Agent</title>
+    <title>Browser Agent</title>
     <link rel="stylesheet" href="sidepanel.css" />
   </head>
   <body>
@@ -133,7 +133,18 @@
             </div>
 
             <label class="field">
-              <span>OpenAI API token</span>
+              <span>Provider</span>
+              <select id="providerSelect">
+                <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="gemini">Google Gemini</option>
+                <option value="mistral">Mistral</option>
+                <option value="kimi">Kimi</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span id="apiKeyLabel">OpenAI API token</span>
               <input
                 id="apiKeyInput"
                 type="password"

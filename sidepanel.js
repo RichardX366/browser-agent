@@ -14,16 +14,74 @@ import {
 } from './helpers.js';
 
 const STORAGE_KEY = 'openai-browser-agent.state';
-const DEFAULT_MODEL = 'gpt-5.4-mini';
-const MODEL_OPTIONS = [
-  'gpt-5.4-mini',
-  'gpt-5.4',
-  'gpt-4.1',
-  'gpt-4.1-mini',
-  'gpt-4.1-nano',
-];
+const DEFAULT_PROVIDER = 'openai';
+const PROVIDERS = {
+  openai: {
+    label: 'OpenAI',
+    apiKeyLabel: 'OpenAI API token',
+    apiKeyPlaceholder: 'sk-...',
+    defaultModel: 'gpt-5.4-mini',
+    models: [
+      'gpt-5.4-mini',
+      'gpt-5.4',
+      'gpt-4.1',
+      'gpt-4.1-mini',
+      'gpt-4.1-nano',
+    ],
+    endpoint: 'https://api.openai.com/v1/chat/completions',
+    adapter: 'openai-compatible',
+  },
+  anthropic: {
+    label: 'Anthropic',
+    apiKeyLabel: 'Anthropic API token',
+    apiKeyPlaceholder: 'sk-ant-...',
+    defaultModel: 'claude-sonnet-4-5',
+    models: ['claude-sonnet-4-5', 'claude-opus-4-1', 'claude-haiku-3-5'],
+    endpoint: 'https://api.anthropic.com/v1/messages',
+    adapter: 'anthropic',
+  },
+  gemini: {
+    label: 'Google Gemini',
+    apiKeyLabel: 'Gemini API key',
+    apiKeyPlaceholder: 'AIza...',
+    defaultModel: 'gemini-2.5-flash',
+    models: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'],
+    endpoint: 'https://generativelanguage.googleapis.com/v1beta/models',
+    adapter: 'gemini',
+  },
+  mistral: {
+    label: 'Mistral',
+    apiKeyLabel: 'Mistral API key',
+    apiKeyPlaceholder: '...',
+    defaultModel: 'mistral-large-latest',
+    models: [
+      'mistral-large-latest',
+      'mistral-medium-latest',
+      'mistral-small-latest',
+    ],
+    endpoint: 'https://api.mistral.ai/v1/chat/completions',
+    adapter: 'openai-compatible',
+  },
+  kimi: {
+    label: 'Kimi',
+    apiKeyLabel: 'Moonshot API key',
+    apiKeyPlaceholder: 'sk-...',
+    defaultModel: 'kimi-k2.6',
+    models: [
+      'kimi-k2.6',
+      'kimi-k2.5',
+      'kimi-k2-turbo-preview',
+      'kimi-k2-0905-preview',
+      'moonshot-v1-128k',
+    ],
+    endpoint: 'https://api.moonshot.ai/v1/chat/completions',
+    adapter: 'openai-compatible',
+    omitTemperature: true,
+  },
+};
+const DEFAULT_MODEL = PROVIDERS[DEFAULT_PROVIDER].defaultModel;
 const SYSTEM_PROMPT = [
-  "You are an OpenAI browser agent controlling the user's current browser tab.",
+  "You are a browser agent controlling the user's current browser tab.",
   'Use browser tools to inspect the page, choose actions carefully, and explain only concise, observable reasoning when it helps the user follow along.',
   'If you need to inspect the page state, call the page-reading or tab-context tools first.',
   'When you make tool calls, keep the user-visible planning text short and practical.',
@@ -32,7 +90,9 @@ const SYSTEM_PROMPT = [
 ].join(' ');
 
 const state = {
+  provider: DEFAULT_PROVIDER,
   apiKey: '',
+  apiKeys: {},
   model: DEFAULT_MODEL,
   activeConversationId: null,
   conversations: [],
@@ -59,6 +119,8 @@ const elements = {
   closeSettingsButton: document.getElementById('closeSettingsButton'),
   chatPage: document.getElementById('chatPage'),
   settingsPage: document.getElementById('settingsPage'),
+  providerSelect: document.getElementById('providerSelect'),
+  apiKeyLabel: document.getElementById('apiKeyLabel'),
   apiKeyInput: document.getElementById('apiKeyInput'),
   modelSelect: document.getElementById('modelSelect'),
   customModelField: document.getElementById('customModelField'),
@@ -128,10 +190,42 @@ function safeStringify(value, space = 2) {
   }
 }
 
+function getProvider(provider = state.provider) {
+  return PROVIDERS[provider] || PROVIDERS[DEFAULT_PROVIDER];
+}
+
+function getProviderId(provider = state.provider) {
+  return PROVIDERS[provider] ? provider : DEFAULT_PROVIDER;
+}
+
+function getProviderModelOptions(provider = state.provider) {
+  return getProvider(provider).models || [];
+}
+
+function getDefaultModel(provider = state.provider) {
+  return getProvider(provider).defaultModel || DEFAULT_MODEL;
+}
+
+function getCurrentApiKey() {
+  const provider = getProviderId();
+  return state.apiKeys?.[provider] || '';
+}
+
+function setCurrentApiKey(apiKey) {
+  const provider = getProviderId();
+  state.apiKey = apiKey;
+  state.apiKeys = {
+    ...(state.apiKeys || {}),
+    [provider]: apiKey,
+  };
+}
+
 function loadState() {
   const raw = localStorage.getItem(STORAGE_KEY);
   if (!raw) {
+    state.provider = DEFAULT_PROVIDER;
     state.apiKey = '';
+    state.apiKeys = {};
     state.model = DEFAULT_MODEL;
     state.conversations = [createConversation()];
     state.activeConversationId = state.conversations[0].id;
@@ -140,8 +234,16 @@ function loadState() {
 
   try {
     const parsed = JSON.parse(raw);
-    state.apiKey = parsed.apiKey || '';
-    state.model = parsed.model || DEFAULT_MODEL;
+    state.provider = getProviderId(parsed.provider || DEFAULT_PROVIDER);
+    state.apiKeys =
+      parsed.apiKeys && typeof parsed.apiKeys === 'object'
+        ? parsed.apiKeys
+        : {};
+    if (parsed.apiKey && !state.apiKeys[state.provider]) {
+      state.apiKeys[state.provider] = parsed.apiKey;
+    }
+    state.apiKey = state.apiKeys[state.provider] || parsed.apiKey || '';
+    state.model = parsed.model || getDefaultModel(state.provider);
     state.conversations =
       Array.isArray(parsed.conversations) && parsed.conversations.length
         ? parsed.conversations
@@ -149,7 +251,9 @@ function loadState() {
     state.activeConversationId =
       parsed.activeConversationId || state.conversations[0].id;
   } catch {
+    state.provider = DEFAULT_PROVIDER;
     state.apiKey = '';
+    state.apiKeys = {};
     state.model = DEFAULT_MODEL;
     state.conversations = [createConversation()];
     state.activeConversationId = state.conversations[0].id;
@@ -162,13 +266,20 @@ function loadState() {
   ) {
     state.activeConversationId = state.conversations[0].id;
   }
+
+  state.provider = getProviderId(state.provider);
+  state.model = state.model || getDefaultModel(state.provider);
+  state.apiKey = state.apiKeys?.[state.provider] || state.apiKey || '';
 }
 
 function persistState() {
+  setCurrentApiKey(state.apiKey || '');
   localStorage.setItem(
     STORAGE_KEY,
     JSON.stringify({
+      provider: state.provider,
       apiKey: state.apiKey,
+      apiKeys: state.apiKeys,
       model: state.model,
       activeConversationId: state.activeConversationId,
       conversations: state.conversations,
@@ -183,7 +294,8 @@ function createConversation(title = 'New conversation') {
     title,
     createdAt,
     updatedAt: createdAt,
-    model: DEFAULT_MODEL,
+    provider: state.provider,
+    model: getDefaultModel(state.provider),
     messages: [],
   };
 }
@@ -249,6 +361,7 @@ function setRunning(isRunning) {
   elements.sendButton.disabled = false;
   renderSendButton();
   elements.newConversationButton.disabled = isRunning;
+  elements.providerSelect.disabled = isRunning;
   elements.modelSelect.disabled = isRunning;
   elements.customModelInput.disabled = isRunning;
   elements.apiKeyInput.disabled = isRunning;
@@ -264,18 +377,48 @@ function setRunning(isRunning) {
 }
 
 function updateConversationModel(conversation) {
+  conversation.provider = state.provider;
   conversation.model = state.model;
 }
 
 function renderModelControls() {
-  const isKnownModel = MODEL_OPTIONS.includes(state.model);
+  const provider = getProvider();
+  const modelOptions = getProviderModelOptions();
+  elements.providerSelect.value = getProviderId();
+  elements.apiKeyLabel.textContent = provider.apiKeyLabel;
+  elements.apiKeyInput.placeholder = provider.apiKeyPlaceholder;
+  elements.modelSelect.innerHTML = '';
+
+  for (const model of modelOptions) {
+    const option = document.createElement('option');
+    option.value = model;
+    option.textContent = model;
+    elements.modelSelect.append(option);
+  }
+
+  const customOption = document.createElement('option');
+  customOption.value = 'custom';
+  customOption.textContent = 'Custom';
+  elements.modelSelect.append(customOption);
+
+  const isKnownModel = modelOptions.includes(state.model);
   elements.modelSelect.value = isKnownModel ? state.model : 'custom';
   elements.customModelField.hidden = isKnownModel;
   elements.customModelInput.value = isKnownModel ? '' : state.model;
 }
 
+function setProvider(provider) {
+  state.provider = getProviderId(provider);
+  state.apiKey = state.apiKeys?.[state.provider] || '';
+  state.model = getDefaultModel(state.provider);
+  const conversation = getActiveConversation();
+  updateConversationModel(conversation);
+  persistState();
+  renderAll();
+}
+
 function setModel(model) {
-  state.model = String(model || '').trim() || DEFAULT_MODEL;
+  state.model = String(model || '').trim() || getDefaultModel();
   const conversation = getActiveConversation();
   updateConversationModel(conversation);
   persistState();
@@ -387,7 +530,8 @@ function renderConversationList() {
 
     const summary = document.createElement('div');
     summary.className = 'conversation-meta';
-    summary.innerHTML = `<span>${escapeHtml(conversation.model || DEFAULT_MODEL)}</span><span>${escapeHtml(conversationSummary(conversation))}</span>`;
+    const providerLabel = getProvider(conversation.provider).label;
+    summary.innerHTML = `<span>${escapeHtml(`${providerLabel} / ${conversation.model || getDefaultModel(conversation.provider)}`)}</span><span>${escapeHtml(conversationSummary(conversation))}</span>`;
 
     selectButton.append(title, meta, summary);
     item.append(selectButton, deleteButton);
@@ -562,6 +706,7 @@ function renderTranscript() {
 
 function renderAll() {
   ensureDefaultConversation();
+  state.apiKey = getCurrentApiKey();
   elements.apiKeyInput.value = state.apiKey;
   renderModelControls();
   renderConversationList();
@@ -573,9 +718,15 @@ function renderAll() {
 function selectConversation(conversationId) {
   state.activeConversationId = conversationId;
   const conversation = getConversation(conversationId);
+  if (conversation?.provider) {
+    state.provider = getProviderId(conversation.provider);
+  }
   if (conversation?.model) {
     state.model = conversation.model;
+  } else {
+    state.model = getDefaultModel(state.provider);
   }
+  state.apiKey = getCurrentApiKey();
   persistState();
   renderAll();
   showChatPage();
@@ -584,6 +735,7 @@ function selectConversation(conversationId) {
 
 function newConversation() {
   const conversation = createConversation();
+  conversation.provider = state.provider;
   conversation.model = state.model;
   state.conversations.unshift(conversation);
   state.activeConversationId = conversation.id;
@@ -1684,7 +1836,64 @@ async function toOpenAIToolDefinitions() {
   return tools;
 }
 
-function toApiMessage(message) {
+async function toAnthropicToolDefinitions() {
+  const tools = await toOpenAIToolDefinitions();
+  return tools.map((tool) => ({
+    name: tool.function.name,
+    description: tool.function.description,
+    input_schema: tool.function.parameters,
+  }));
+}
+
+function normalizeGeminiSchema(schema) {
+  if (!schema || typeof schema !== 'object') return schema;
+
+  if (Array.isArray(schema)) {
+    return schema.map(normalizeGeminiSchema);
+  }
+
+  const normalized = {};
+  for (const [key, value] of Object.entries(schema)) {
+    if (key === 'type' && Array.isArray(value)) {
+      normalized.type = value.includes('string') ? 'string' : value[0];
+      continue;
+    }
+
+    if (key === 'properties' && value && typeof value === 'object') {
+      normalized.properties = Object.fromEntries(
+        Object.entries(value).map(([propertyName, propertySchema]) => [
+          propertyName,
+          normalizeGeminiSchema(propertySchema),
+        ]),
+      );
+      continue;
+    }
+
+    if (key === 'items') {
+      normalized.items = normalizeGeminiSchema(value);
+      continue;
+    }
+
+    normalized[key] = normalizeGeminiSchema(value);
+  }
+
+  return normalized;
+}
+
+async function toGeminiToolDefinitions() {
+  const tools = await toOpenAIToolDefinitions();
+  return [
+    {
+      functionDeclarations: tools.map((tool) => ({
+        name: tool.function.name,
+        description: tool.function.description,
+        parameters: normalizeGeminiSchema(tool.function.parameters),
+      })),
+    },
+  ];
+}
+
+function toOpenAIMessage(message) {
   if (message.role === 'assistant') {
     const serializedToolCalls = Array.isArray(message.tool_calls)
       ? message.tool_calls
@@ -1754,22 +1963,162 @@ function requestMessagesForConversation(conversation) {
 
   return [
     { role: 'system', content: SYSTEM_PROMPT },
-    ...repairedMessages.map(toApiMessage),
+    ...repairedMessages.map(toOpenAIMessage),
   ];
 }
 
-async function callOpenAI(conversation) {
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+function repairedConversationMessages(conversation) {
+  return requestMessagesForConversation(conversation).filter(
+    (message) => message.role !== 'system',
+  );
+}
+
+function toAnthropicMessage(message) {
+  if (message.role === 'assistant') {
+    const content = [];
+    if (message.content?.trim()) {
+      content.push({ type: 'text', text: message.content });
+    }
+
+    for (const call of message.tool_calls || []) {
+      if (!call.id || !call.function?.name) continue;
+      content.push({
+        type: 'tool_use',
+        id: call.id,
+        name: call.function.name,
+        input: safeJsonParse(call.function.arguments || '{}') || {},
+      });
+    }
+
+    return {
+      role: 'assistant',
+      content: content.length ? content : [{ type: 'text', text: '' }],
+    };
+  }
+
+  if (message.role === 'tool') {
+    return {
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: message.tool_call_id,
+          content: message.content || '',
+        },
+      ],
+    };
+  }
+
+  return {
+    role: 'user',
+    content: message.content || '',
+  };
+}
+
+function toGeminiContent(message) {
+  if (message.role === 'assistant') {
+    const parts = [];
+    if (message.content?.trim()) {
+      parts.push({ text: message.content });
+    }
+
+    for (const call of message.tool_calls || []) {
+      if (!call.function?.name) continue;
+      parts.push({
+        functionCall: {
+          name: call.function.name,
+          args: safeJsonParse(call.function.arguments || '{}') || {},
+        },
+      });
+    }
+
+    return {
+      role: 'model',
+      parts: parts.length ? parts : [{ text: '' }],
+    };
+  }
+
+  if (message.role === 'tool') {
+    return {
+      role: 'user',
+      parts: [
+        {
+          functionResponse: {
+            name: message.name,
+            response: { result: message.content || '' },
+          },
+        },
+      ],
+    };
+  }
+
+  return {
+    role: 'user',
+    parts: [{ text: message.content || '' }],
+  };
+}
+
+async function callOpenAICompatible(conversation, providerConfig) {
+  const model = conversation.model || state.model || getDefaultModel();
+  const body = {
+    model,
+    messages: requestMessagesForConversation(conversation),
+    tools: await toOpenAIToolDefinitions(),
+    tool_choice: 'auto',
+  };
+
+  if (!providerConfig.omitTemperature) {
+    body.temperature = 0.2;
+  }
+
+  if (
+    providerConfig === PROVIDERS.kimi &&
+    (model === 'kimi-k2.6' || model === 'kimi-k2.5')
+  ) {
+    body.thinking = { type: 'disabled' };
+  }
+
+  const response = await fetch(providerConfig.endpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${state.apiKey}`,
     },
+    body: JSON.stringify(body),
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    const message =
+      data?.error?.message ||
+      `${providerConfig.label} request failed with status ${response.status}`;
+    throw new Error(message);
+  }
+
+  const choice = data?.choices?.[0]?.message;
+  if (!choice) {
+    throw new Error(`${providerConfig.label} returned no assistant message.`);
+  }
+
+  return choice;
+}
+
+async function callAnthropic(conversation, providerConfig) {
+  const response = await fetch(providerConfig.endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': state.apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
     body: JSON.stringify({
-      model: conversation.model || state.model || DEFAULT_MODEL,
-      messages: requestMessagesForConversation(conversation),
-      tools: await toOpenAIToolDefinitions(),
-      tool_choice: 'auto',
+      model: conversation.model || state.model || getDefaultModel('anthropic'),
+      system: SYSTEM_PROMPT,
+      messages: repairedConversationMessages(conversation).map(toAnthropicMessage),
+      tools: await toAnthropicToolDefinitions(),
+      tool_choice: { type: 'auto' },
+      max_tokens: 4096,
       temperature: 0.2,
     }),
   });
@@ -1778,16 +2127,89 @@ async function callOpenAI(conversation) {
   if (!response.ok) {
     const message =
       data?.error?.message ||
-      `OpenAI request failed with status ${response.status}`;
+      `${providerConfig.label} request failed with status ${response.status}`;
     throw new Error(message);
   }
 
-  const choice = data?.choices?.[0]?.message;
-  if (!choice) {
-    throw new Error('OpenAI returned no assistant message.');
+  const content = Array.isArray(data.content) ? data.content : [];
+  return {
+    content: content
+      .filter((part) => part.type === 'text')
+      .map((part) => part.text || '')
+      .join('\n'),
+    tool_calls: content
+      .filter((part) => part.type === 'tool_use')
+      .map((part) => ({
+        id: part.id,
+        type: 'function',
+        function: {
+          name: part.name,
+          arguments: safeStringify(part.input || {}),
+        },
+      })),
+  };
+}
+
+async function callGemini(conversation, providerConfig) {
+  const model = conversation.model || state.model || getDefaultModel('gemini');
+  const url = `${providerConfig.endpoint}/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(state.apiKey)}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      systemInstruction: {
+        parts: [{ text: SYSTEM_PROMPT }],
+      },
+      contents: repairedConversationMessages(conversation).map(toGeminiContent),
+      tools: await toGeminiToolDefinitions(),
+      generationConfig: {
+        temperature: 0.2,
+      },
+    }),
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    const message =
+      data?.error?.message ||
+      `${providerConfig.label} request failed with status ${response.status}`;
+    throw new Error(message);
   }
 
-  return choice;
+  const parts = data?.candidates?.[0]?.content?.parts || [];
+  return {
+    content: parts
+      .filter((part) => typeof part.text === 'string')
+      .map((part) => part.text)
+      .join('\n'),
+    tool_calls: parts
+      .filter((part) => part.functionCall?.name)
+      .map((part) => ({
+        id: uid('gemini_tool'),
+        type: 'function',
+        function: {
+          name: part.functionCall.name,
+          arguments: safeStringify(part.functionCall.args || {}),
+        },
+      })),
+  };
+}
+
+async function callProvider(conversation) {
+  const providerId = getProviderId(conversation.provider || state.provider);
+  const providerConfig = getProvider(providerId);
+
+  if (providerConfig.adapter === 'anthropic') {
+    return callAnthropic(conversation, providerConfig);
+  }
+
+  if (providerConfig.adapter === 'gemini') {
+    return callGemini(conversation, providerConfig);
+  }
+
+  return callOpenAICompatible(conversation, providerConfig);
 }
 
 function normalizeAssistantMessage(choice) {
@@ -1877,9 +2299,12 @@ async function runConversation(conversationId) {
   const conversation = getConversation(conversationId);
   if (!conversation) return;
 
+  const providerLabel = getProvider(conversation.provider || state.provider).label;
+  state.apiKey = state.apiKeys?.[conversation.provider || state.provider] || state.apiKey || '';
+
   if (!state.apiKey.trim()) {
     setStatus('Add an API key first');
-    throw new Error('Add your OpenAI API key before sending a prompt.');
+    throw new Error(`Add your ${providerLabel} API key before sending a prompt.`);
   }
 
   setRunning(true);
@@ -1892,7 +2317,7 @@ async function runConversation(conversationId) {
       }
 
       const refreshedConversation = getConversation(conversationId);
-      const choice = await callOpenAI(refreshedConversation);
+      const choice = await callProvider(refreshedConversation);
       const assistantMessage = normalizeAssistantMessage(choice);
       appendMessage(conversationId, assistantMessage);
 
@@ -1987,26 +2412,30 @@ function bindEvents() {
   elements.settingsButton.addEventListener('click', showSettingsPage);
   elements.closeSettingsButton.addEventListener('click', showChatPage);
 
+  elements.providerSelect.addEventListener('change', () => {
+    setProvider(elements.providerSelect.value || DEFAULT_PROVIDER);
+  });
+
   elements.apiKeyInput.addEventListener('input', () => {
-    state.apiKey = elements.apiKeyInput.value.trim();
+    setCurrentApiKey(elements.apiKeyInput.value.trim());
     persistState();
   });
 
   elements.modelSelect.addEventListener('change', () => {
     if (elements.modelSelect.value === 'custom') {
       elements.customModelField.hidden = false;
-      elements.customModelInput.value = MODEL_OPTIONS.includes(state.model)
+      elements.customModelInput.value = getProviderModelOptions().includes(state.model)
         ? ''
         : state.model;
       elements.customModelInput.focus();
       return;
     }
-    setModel(elements.modelSelect.value || DEFAULT_MODEL);
+    setModel(elements.modelSelect.value || getDefaultModel());
   });
 
   elements.customModelInput.addEventListener('input', () => {
     if (elements.modelSelect.value !== 'custom') return;
-    setModel(elements.customModelInput.value || DEFAULT_MODEL);
+    setModel(elements.customModelInput.value || getDefaultModel());
   });
 
   elements.composer.addEventListener('submit', handleSubmit);
@@ -2040,8 +2469,9 @@ function bindEvents() {
 
 function normalizeConversationModels() {
   for (const conversation of state.conversations) {
+    conversation.provider = getProviderId(conversation.provider || state.provider);
     if (!conversation.model) {
-      conversation.model = state.model || DEFAULT_MODEL;
+      conversation.model = state.model || getDefaultModel(conversation.provider);
     }
   }
 }

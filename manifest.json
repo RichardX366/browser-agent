@@ -16,7 +16,7 @@
     }
   },
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' https://api.openai.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:;"
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' https://api.openai.com https://api.anthropic.com https://generativelanguage.googleapis.com https://api.mistral.ai https://api.moonshot.ai; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:;"
   },
   "description": "A browser agent for interacting with web content.",
   "host_permissions": ["\u003Call_urls>"],
